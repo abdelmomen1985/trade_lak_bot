@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+# ============================================================
+# Trade Lak Watchdog — نظام المراقبة الشامل
+# يفحص كل 5 دقائق ويرسل تنبيه Telegram فوري عند أي مشكلة
+# ============================================================
+import os, sys, time, json, logging, subprocess, requests
+from datetime import datetime
+
+BOT_DIR = '/root/trade_lak_bot'
+sys.path.insert(0, BOT_DIR)
+
+# ─── إعداد اللوج ──────────────────────────────────────────
+os.makedirs(f'{BOT_DIR}/logs', exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(f'{BOT_DIR}/logs/watchdog.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('watchdog')
+
+# ─── الإعدادات ────────────────────────────────────────────
+BOT_TOKEN    = "8835139388:AAH9AVb06Nq8WbNkVsZ5bS1Dqrd10Wdvc84"
+OWNER_ID     = "6633826689"   # رسائل خاصة للمالك فقط
+CHECK_INTERVAL = 300          # فحص كل 5 دقائق
+
+SERVICES = [
+    'trade-lak-bot',
+    'flash-crash-sniper',
+]
+
+PAID_APIS = {
+    'OKX':          'https://www.okx.com/api/v5/public/time',
+    'CoinGlass':    'https://open-api-v3.coinglass.com/api/futures/openInterest/ohlc-history',
+    'CryptoPanic':  'https://cryptopanic.com/api/growth/v2/posts/?auth_token=afed90b669cebc6535f88540ecb1679ee551facc&public=true',
+}
+
+COINGLASS_KEY   = "eaf8efd7876142b0bac70affb6f65f2a"
+STATE_FILE      = f'{BOT_DIR}/data/watchdog_state.json'
+
+# ─── حالة التنبيهات (لتجنب التكرار) ──────────────────────
+_alert_sent: dict = {}   # key → timestamp of last alert
+
+def _load_state():
+    global _alert_sent
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE) as f:
+                _alert_sent = json.load(f)
+    except Exception:
+        _alert_sent = {}
+
+def _save_state():
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE, 'w') as f:
+            json.dump(_alert_sent, f)
+    except Exception:
+        pass
+
+def _can_alert(key: str, cooldown: int = 1800) -> bool:
+    """منع إرسال نفس التنبيه أكثر من مرة كل 30 دقيقة"""
+    last = _alert_sent.get(key, 0)
+    return (time.time() - last) > cooldown
+
+def _mark_alerted(key: str):
+    _alert_sent[key] = time.time()
+    _save_state()
+
+def _clear_alert(key: str):
+    """عند الإصلاح: امسح التنبيه لإرسال تنبيه استرداد"""
+    if key in _alert_sent:
+        del _alert_sent[key]
+        _save_state()
+
+# ─── إرسال Telegram ───────────────────────────────────────
+def send_telegram(msg: str):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, json={
+            'chat_id': OWNER_ID,
+            'text': msg,
+            'parse_mode': 'HTML'
+        }, timeout=10)
+        logger.info(f"📤 تنبيه أُرسل: {msg[:60]}...")
+    except Exception as e:
+        logger.error(f"فشل إرسال Telegram: {e}")
+
+# ─── 1. فحص خدمات systemd ─────────────────────────────────
+def check_services() -> list:
+    issues = []
+    for svc in SERVICES:
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', svc],
+                capture_output=True, text=True, timeout=5
+            )
+            status = result.stdout.strip()
+            if status != 'active':
+                issues.append((svc, status))
+                logger.warning(f"⚠️ خدمة {svc}: {status}")
+            else:
+                logger.info(f"✅ خدمة {svc}: active")
+                _clear_alert(f'svc_{svc}')
+        except Exception as e:
+            issues.append((svc, f'خطأ: {e}'))
+    return issues
+
+# ─── 2. فحص الاتصال بـ OKX ────────────────────────────────
+def check_okx() -> tuple:
+    try:
+        r = requests.get(PAID_APIS['OKX'], timeout=10)
+        if r.status_code == 200:
+            logger.info("✅ OKX API: متصل")
+            _clear_alert('api_okx')
+            return True, None
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+# ─── 3. فحص الاتصال بـ CoinGlass ─────────────────────────
+def check_coinglass() -> tuple:
+    try:
+        headers = {'CG-API-KEY': COINGLASS_KEY}
+        r = requests.get(
+            'https://open-api-v4.coinglass.com/api/futures/liquidation/coin-list',
+            headers=headers, timeout=10
+        )
+        if r.status_code == 200:   # v4 يعيد 200 عند النجاح
+            logger.info(f"✅ CoinGlass API: متصل (HTTP {r.status_code})")
+            _clear_alert('api_coinglass')
+            return True, None
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+# ─── 4. فحص الاتصال بـ CryptoPanic ───────────────────────
+def check_cryptopanic() -> tuple:
+    try:
+        r = requests.get(PAID_APIS['CryptoPanic'], timeout=10)
+        if r.status_code in (200, 429):   # 429 = rate limit = الخدمة تعمل
+            logger.info(f"✅ CryptoPanic API: متصل (HTTP {r.status_code})")
+            _clear_alert('api_cryptopanic')
+            return True, None
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+# ─── 5. فحص آخر نشاط للبوت (هل يعمل فعلاً؟) ─────────────
+def check_bot_activity() -> tuple:
+    try:
+        log_file = f'{BOT_DIR}/logs/bot.log'
+        if not os.path.exists(log_file):
+            return False, "ملف السجل غير موجود"
+        mtime = os.path.getmtime(log_file)
+        age_minutes = (time.time() - mtime) / 60
+        if age_minutes > 10:
+            return False, f"آخر نشاط منذ {age_minutes:.0f} دقيقة"
+        logger.info(f"✅ نشاط البوت: آخر سجل منذ {age_minutes:.1f} دقيقة")
+        _clear_alert('bot_activity')
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+# ─── 6. فحص الرصيد (هل لا يزال موجوداً؟) ────────────────
+def check_balance() -> tuple:
+    try:
+        guard_file = f'{BOT_DIR}/data/capital_guard_state.json'
+        if not os.path.exists(guard_file):
+            return True, None  # لا مشكلة
+        with open(guard_file) as f:
+            data = json.load(f)
+        balance = data.get('total_capital', 0)
+        if balance < 50:
+            return False, f"الرصيد منخفض جداً: ${balance:.2f}"
+        logger.info(f"✅ الرصيد: ${balance:.2f}")
+        _clear_alert('low_balance')
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+# ─── 7. فحص نشاط Flash Crash Sniper ──────────────────────
+def check_flash_sniper_log() -> tuple:
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', 'flash-crash-sniper'],
+            capture_output=True, text=True, timeout=5
+        )
+        status = result.stdout.strip()
+        if status == 'active':
+            logger.info("✅ Flash Crash Sniper: active (systemd)")
+            _clear_alert('flash_sniper_log')
+            return True, None
+        return False, f"flash-crash-sniper: {status}"
+    except Exception as e:
+        return False, str(e)
+
+# ─── بناء رسالة التقرير الدوري ────────────────────────────
+def build_status_report(results: dict) -> str:
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    lines = [f"📊 <b>Trade Lak — تقرير المراقبة</b>", f"🕐 {now}", "━━━━━━━━━━━━━━━━━━━━━"]
+
+    all_ok = all(v[0] for v in results.values())
+
+    for name, (ok, err) in results.items():
+        icon = "✅" if ok else "❌"
+        detail = "" if ok else f" — {err}"
+        lines.append(f"{icon} {name}{detail}")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━")
+    if all_ok:
+        lines.append("🟢 <b>جميع الأنظمة تعمل بكفاءة</b>")
+    else:
+        failed = [n for n, (ok, _) in results.items() if not ok]
+        lines.append(f"🔴 <b>مشاكل في:</b> {', '.join(failed)}")
+
+    return "\n".join(lines)
+
+# ─── الحلقة الرئيسية ──────────────────────────────────────
+def run():
+    logger.info("🚀 Trade Lak Watchdog بدأ — فحص كل 5 دقائق")
+    _load_state()
+
+    # إرسال رسالة بدء تشغيل
+    send_telegram(
+        "🟢 <b>Trade Lak Watchdog</b> بدأ العمل\n"
+        "سأراقب جميع الأنظمة كل 5 دقائق وأُنبّهك فوراً عند أي مشكلة."
+    )
+
+    last_report_time = 0  # آخر تقرير دوري كامل
+
+    while True:
+        try:
+            logger.info("─── بدء دورة الفحص ───")
+
+            # ─── فحص الخدمات ──────────────────────────────
+            svc_issues = check_services()
+            for svc, status in svc_issues:
+                key = f'svc_{svc}'
+                if _can_alert(key):
+                    send_telegram(
+                        f"🚨 <b>تنبيه: خدمة متوقفة!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚙️ الخدمة: <b>{svc}</b>\n"
+                        f"📌 الحالة: <b>{status}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚠️ يحاول systemd إعادة التشغيل تلقائياً..."
+                    )
+                    _mark_alerted(key)
+
+            # ─── فحص APIs ─────────────────────────────────
+            api_checks = {
+                'OKX API':         check_okx(),
+                'CoinGlass API':   check_coinglass(),
+                'CryptoPanic API': check_cryptopanic(),
+            }
+            for api_name, (ok, err) in api_checks.items():
+                key = f'api_{api_name.lower().replace(" ", "_")}'
+                if not ok:
+                    if _can_alert(key):
+                        send_telegram(
+                            f"🔴 <b>انقطاع اتصال!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🌐 الخدمة: <b>{api_name}</b>\n"
+                            f"❌ الخطأ: {err}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"⏳ سيُعاد الفحص خلال 5 دقائق"
+                        )
+                        _mark_alerted(key)
+                else:
+                    _clear_alert(key)
+
+            # ─── فحص نشاط البوت ───────────────────────────
+            bot_ok, bot_err = check_bot_activity()
+            if not bot_ok:
+                if _can_alert('bot_activity'):
+                    send_telegram(
+                        f"⚠️ <b>البوت الرئيسي متوقف!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 السبب: {bot_err}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔄 systemd سيعيد التشغيل تلقائياً"
+                    )
+                    _mark_alerted('bot_activity')
+
+            # ─── فحص Flash Crash Sniper ───────────────────
+            flash_ok, flash_err = check_flash_sniper_log()
+            if not flash_ok:
+                if _can_alert('flash_sniper_log'):
+                    send_telegram(
+                        f"⚠️ <b>Flash Crash Sniper متوقف!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 السبب: {flash_err}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔄 systemd سيعيد التشغيل تلقائياً"
+                    )
+                    _mark_alerted('flash_sniper_log')
+
+            # ─── فحص الرصيد ───────────────────────────────
+            bal_ok, bal_err = check_balance()
+            if not bal_ok:
+                if _can_alert('low_balance', cooldown=3600):  # تنبيه كل ساعة
+                    send_telegram(
+                        f"💸 <b>تحذير: رصيد منخفض!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 {bal_err}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚠️ يُنصح بإضافة رصيد"
+                    )
+                    _mark_alerted('low_balance')
+
+            # ─── تقرير دوري كل ساعة ───────────────────────
+            if time.time() - last_report_time > 3600:
+                results = {
+                    'البوت الرئيسي':       (bot_ok, bot_err),
+                    'Flash Crash Sniper':  (flash_ok, flash_err),
+                    'OKX API':             api_checks['OKX API'],
+                    'CoinGlass API':       api_checks['CoinGlass API'],
+                    'CryptoPanic API':     api_checks['CryptoPanic API'],
+                    'الرصيد':              (bal_ok, bal_err),
+                }
+                # أضف حالة الخدمات
+                for svc in SERVICES:
+                    ok = not any(s == svc for s, _ in svc_issues)
+                    err = next((e for s, e in svc_issues if s == svc), None)
+                    results[f'خدمة {svc}'] = (ok, err)
+
+                report = build_status_report(results)
+                send_telegram(report)
+                last_report_time = time.time()
+                logger.info("📤 أُرسل التقرير الدوري الساعي")
+
+        except Exception as e:
+            logger.error(f"خطأ في دورة الفحص: {e}")
+
+        logger.info(f"⏳ انتظار {CHECK_INTERVAL} ثانية...")
+        time.sleep(CHECK_INTERVAL)
+
+if __name__ == '__main__':
+    run()

@@ -1,0 +1,286 @@
+# Trade Lak Bot - Production Configuration
+# OKX Trading Bot with Advanced Intelligence
+
+# ============================================================================
+# OKX API Configuration
+# ============================================================================
+okx:
+  api_key: "35c12b6c-deda-4d0e-8f4c-d0e4ca8a608d"
+  api_secret: "4495EDF88675CEE07291C4E4E5583F43"
+  passphrase: "Lrtm@01102200"
+  api_name: "Lamo__Dbot"
+  sandbox: false  # Set to true for testing
+  
+# ============================================================================
+# Telegram Configuration
+# ============================================================================
+telegram:
+  bot_token: "8835139388:AAH9AVb06Nq8WbNkVsZ5bS1Dqrd10Wdvc84"
+  chat_id: 6633826689
+  enabled: true
+  send_alerts: true
+  send_trade_notifications: true
+  send_daily_summary: true
+
+# ============================================================================
+# Trading Configuration
+# ============================================================================
+trading:
+  # Capital Management
+  initial_capital: 400  # USD
+  max_capital_per_trade: 0.1  # 10% of capital
+  
+  # Risk Management
+  risk_percentage_min: 3  # Minimum risk %
+  risk_percentage_max: 5  # Maximum risk %
+  dynamic_risk: true  # AI adjusts risk based on confidence
+  
+  # Position Management
+  max_open_positions: 5
+  max_daily_trades: 20
+  max_daily_loss_percentage: 5  # Stop trading if daily loss > 5%
+  
+  # Take Profit & Stop Loss
+  take_profit_ratio: 2.0  # 1:2 Risk/Reward minimum
+  stop_loss_distance_percentage: 2  # 2% below entry
+  
+  # Trading Pairs
+  trading_pairs:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "SOL/USDT"
+    - "AVAX/USDT"
+    - "MATIC/USDT"
+    - "ARB/USDT"
+    - "OP/USDT"
+    - "LINK/USDT"
+  
+  # Auto-select pairs based on opportunities
+  auto_select_pairs: true
+  min_pairs_to_scan: 20
+  
+  # Trading Hours
+  trading_enabled: true
+  trading_start_hour: 0  # 24-hour format (0 = 00:00)
+  trading_end_hour: 23   # 24-hour format (23 = 23:59)
+  
+  # Avoid high-risk periods
+  avoid_friday: true
+  avoid_weekend: true
+  avoid_night_hours: false
+  night_start_hour: 22
+  night_end_hour: 6
+
+# ============================================================================
+# Market Analysis Configuration
+# ============================================================================
+analysis:
+  # Timeframes for analysis
+  timeframes:
+    - "1h"
+    - "4h"
+    - "1d"
+  
+  # Technical Indicators
+  indicators:
+    rsi_period: 14
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    sma_short: 20
+    sma_long: 50
+    bollinger_period: 20
+    bollinger_std: 2
+  
+  # Support & Resistance
+  support_resistance_lookback: 100
+  
+  # Volume Analysis
+  volume_threshold: 1.5  # 1.5x average volume
+  
+  # Volatility
+  volatility_threshold_high: 0.15  # 15%
+  volatility_threshold_low: 0.05   # 5%
+
+# ============================================================================
+# Intelligence Engine Configuration
+# ============================================================================
+intelligence:
+  # Market Indicators
+  check_market_indicators: true
+  crash_probability_threshold: 0.80
+  recession_probability_threshold: 0.80
+  
+  # Psychology Strategy
+  check_psychology: true
+  fear_greed_index_enabled: true
+  
+  # Economic Calendar
+  check_economic_calendar: true
+  avoid_critical_events: true
+  avoid_high_impact_events: true
+  
+  # Whale Detection
+  check_whale_activity: true
+  whale_activity_threshold: 0.70
+  
+  # Wick Detection
+  check_wick_patterns: true
+  wick_danger_threshold: "HIGH"  # SAFE, LOW, MEDIUM, HIGH, CRITICAL
+  
+  # Machine Learning
+  use_ml_model: true
+  ml_confidence_threshold: 0.65
+  
+  # Decision Making
+  min_confidence_to_trade: 0.60  # 60% minimum confidence
+  min_signals_to_trade: 3  # At least 3 signals aligned
+
+# ============================================================================
+# Data Collection Configuration
+# ============================================================================
+data:
+  # Database
+  database_type: "sqlite"
+  database_path: "./data/trades.db"
+  
+  # Historical Data
+  keep_history_days: 365
+  backup_frequency_days: 7
+  
+  # Logging
+  log_level: "INFO"
+  log_file: "./logs/bot.log"
+  log_max_size_mb: 100
+  log_backup_count: 10
+
+# ============================================================================
+# API Configuration
+# ============================================================================
+api:
+  # Rate Limiting
+  rate_limit_enabled: true
+  requests_per_second: 10
+  
+  # Retry Configuration
+  max_retries: 3
+  retry_delay_seconds: 2
+  
+  # Timeout
+  request_timeout_seconds: 30
+  
+# External APIs
+coinglass_api_enabled: true
+coinglass_api_key: "eaf8efd7876142b0bac70affb6f65f2a"
+cryptopanic_api_enabled: true
+cryptopanic_api_key: "afed90b669cebc6535f88540ecb1679ee551facc"
+coingecko_api_enabled: true
+etherscan_api_enabled: false
+dexu_api_enabled: false
+
+# ============================================================================
+# Performance Monitoring
+# ============================================================================
+monitoring:
+  # Metrics
+  track_metrics: true
+  metrics_update_interval_seconds: 60
+  
+  # Performance Targets
+  target_monthly_return: 10  # %
+  target_win_rate: 65  # %
+  target_profit_factor: 2.0  # Profit/Loss ratio
+  
+  # Alerts
+  alert_on_losing_streak: true
+  losing_streak_threshold: 3
+  alert_on_max_loss: true
+  alert_on_high_volatility: true
+
+# ============================================================================
+# Advanced Settings
+# ============================================================================
+advanced:
+  # Machine Learning
+  ml_model_path: "./data/models/trading_model.pkl"
+  ml_retrain_frequency_days: 7
+  
+  # Optimization
+  optimize_entry_points: true
+  optimize_exit_points: true
+  
+  # Risk Management
+  use_trailing_stop: true
+  trailing_stop_percentage: 2
+  
+  # Diversification
+  max_exposure_per_pair: 0.2  # 20%
+  max_exposure_per_sector: 0.5  # 50%
+  
+  # Backtesting
+  backtest_enabled: false
+  backtest_start_date: "2024-01-01"
+  backtest_end_date: "2024-12-31"
+
+# ============================================================================
+# Notifications
+# ============================================================================
+notifications:
+  # Trade Notifications
+  notify_on_trade_open: true
+  notify_on_trade_close: true
+  notify_on_stop_loss: true
+  notify_on_take_profit: true
+  
+  # Alert Notifications
+  notify_on_whale_activity: true
+  notify_on_wick_trap: true
+  notify_on_economic_event: true
+  notify_on_market_condition_change: true
+  
+  # Summary Notifications
+  daily_summary_time: "08:00"  # HH:MM format
+  weekly_summary_day: "Monday"
+  monthly_summary_day: 1
+
+# ============================================================================
+# Safety & Security
+# ============================================================================
+safety:
+  # Kill Switch
+  enable_kill_switch: true
+  kill_switch_loss_percentage: 10  # Stop if lose 10% of capital
+  
+  # Position Limits
+  max_single_trade_loss: 50  # USD
+  max_daily_loss: 100  # USD
+  
+  # Validation
+  validate_orders: true
+  require_confirmation_for_large_trades: false
+  large_trade_threshold: 100  # USD
+  
+  # Security
+  encrypt_sensitive_data: true
+  api_key_rotation_days: 90
+
+# ============================================================================
+# Development & Testing
+# ============================================================================
+development:
+  debug_mode: false
+  verbose_logging: false
+  dry_run: false  # Don't execute real trades
+  paper_trading: false  # Simulate trades without real money
+  
+  # Testing
+  test_mode: false
+  test_capital: 100  # USD for testing
+  
+  # Simulation
+  simulate_market_conditions: false
+  simulation_speed: 1  # 1x real-time
+
+# ============================================================================
+# End of Configuration
+# ============================================================================

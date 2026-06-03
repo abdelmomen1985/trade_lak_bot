@@ -1,0 +1,40 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Private keys & certificates
+keys/
+config/keys/
+*.pem
+
+# Logs
+logs/
+*.log
+bot_log.txt
+
+# Backup files
+*.bak
+*.bak_*
+*.backup_*
+*.backup
+
+# Archives
+*.tar.gz
+*.zip
+
+# Runtime state files
+accumulation_state.json
+breakout_state.json
+loss_patterns.json
+
+# Models (large binary files)
+models/
+models_internal/
+
+# Data directory
+data/
