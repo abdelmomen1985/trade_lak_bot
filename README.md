@@ -387,5 +387,6 @@ python main.py
 
 <p align="center">
   Made with ❤️ by Trade Lak Team<br>
-  <strong>Version:</strong> 4.0.0
+  <strong>Version:</strong> 4.0.0<br>
+  <strong>Last Updated:</strong> June 2026
 </p>
