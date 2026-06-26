@@ -289,22 +289,9 @@ def run():
         logger.critical(f"❌ [OKX] فشل الاتصال: {e}")
         sys.exit(1)
 
-    # ─── اختبار Bybit ─────────────────────────────────────
+    # ─── Bybit معطّل — OKX فقط (تم التعطيل 25 يونيو 2026) ────────
     bybit_enabled = False
-    try:
-        r = _bybit_session.get(f'{BYBIT_BASE_URL}/v5/market/time', timeout=5)
-        if r.status_code == 200 and r.json().get('retCode') == 0:
-            bybit_bal = _get_bybit_balance()
-            logger.info(f"✅ [Bybit] متصل — رصيد USDT: ${bybit_bal:.2f}")
-            bybit_enabled = bybit_bal >= 1.0
-            if not bybit_enabled:
-                logger.warning("[Bybit] رصيد غير كافٍ للتداول (< $1)")
-        else:
-            logger.warning("[Bybit] فشل اختبار الاتصال")
-    except Exception as e:
-        logger.warning(f"[Bybit] خطأ في الاتصال: {e}")
-
-    logger.info(f"[Bybit] يراقب {len(BYBIT_ONLY_SYMBOLS)} عملة حصرية على Bybit")
+    logger.info("[Bybit] ⛔ معطّل — النظام يعمل على OKX فقط")
 
     consecutive_errors = {s: 0 for s in WATCH_SYMBOLS}
 

@@ -196,45 +196,12 @@ class OKXClient:
             logger.error(f"خطأ Spot شراء {symbol}: {e}")
             return None
 
-
-    def cancel_algo_orders_for_symbol(self, symbol):
-        """
-        إلغاء جميع الأوامر الشرطية (SL/TP/Conditional) لعملة معينة
-        يُستدعى قبل أي بيع market لتحرير الرصيد المحجوز
-        """
-        try:
-            inst_id = symbol.replace('/', '-').replace('/USDT', '-USDT')
-            # جلب الأوامر الشرطية المفتوحة
-            for ord_type in ['conditional', 'oco', 'trigger']:
-                try:
-                    resp = self.spot.private_get_trade_orders_algo_pending({
-                        'ordType': ord_type,
-                        'instId': inst_id
-                    })
-                    orders = resp.get('data', [])
-                    for o in orders:
-                        algo_id = o.get('algoId', '')
-                        if algo_id:
-                            cancel = self.spot.private_post_trade_cancel_algos([{
-                                'algoId': algo_id,
-                                'instId': inst_id
-                            }])
-                            logger.info(f"✅ أُلغي أمر {ord_type} {algo_id} لـ {symbol}")
-                except Exception as e:
-                    logger.debug(f"cancel_algo {ord_type} {symbol}: {e}")
-            import time; time.sleep(1)  # انتظار تحرير الرصيد
-        except Exception as e:
-            logger.warning(f"⚠️ cancel_algo_orders_for_symbol {symbol}: {e}")
-
     def spot_sell(self, symbol, amount_coin, full_exit=False):
         """بيع Spot — يستخدم الرصيد الفعلي من OKX لتجنب خطأ insufficient balance
         full_exit=True: يبيع كامل الرصيد المتاح (لإغلاق الصفقة بالكامل)
         full_exit=False: يبيع الكمية المحددة فقط (للبيع الجزئي)
-        BUG-2 FIX: يُلغي أوامر SL الشرطية أولاً لتحرير الرصيد المحجوز
         """
         try:
-            # BUG-2 FIX: إلغاء أي أوامر شرطية مفتوحة قبل البيع
-            self.cancel_algo_orders_for_symbol(symbol)
             base_currency = symbol.split('/')[0]
             try:
                 bal = self.spot.fetch_balance()

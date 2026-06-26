@@ -1,455 +1,432 @@
 """
-Trade Lak - Accumulation Alert System
-نظام تنبيهات التراكم الصامت
+Trade Lak - Accumulation Alert System v2
+نظام تنبيهات التراكم الصامت — يعتمد على OKX API فقط (بدون Coinglass)
 
-يراقب:
-- OI يرتفع تدريجياً
-- Funding محايد أو سلبي خفيف
-- Volume يزيد
-- CVD يتحسن (نستنتجه من نسبة Long/Short)
+المنطق:
+- كل 15 دقيقة يجلب أعلى 30 عملة بـ OI من OKX (قائمة ديناميكية)
+- لكل عملة يفحص 5 شروط:
+  1. OI ارتفع > +0.5% في ساعة
+  2. Funding محايد أو سلبي (< 0.01%)
+  3. Volume يرتفع > +2%
+  4. Long/Short Ratio يتحسن (أغلبية Long تزيد)
+  5. OI يرتفع على 4 ساعات أيضاً (تراكم مستمر)
 
-تنبيه 1: عند بداية ظهور الإشارات (3+ شروط)
-تنبيه 2: عند تصاعد التراكم (4+ شروط + تأكيد)
+تنبيه 1: 3+ شروط → تراكم أولي
+تنبيه 2: 4+ شروط → تراكم متصاعد
 """
-
 import requests
 import logging
 import json
 import time
 import os
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/root/trade_lak_bot/accumulation_alert.log', encoding='utf-8'),
+    ]
+)
 logger = logging.getLogger(__name__)
 
-
-def _fmt_price(price: float) -> str:
-    """تنسيق السعر بشكل ذكي يدعم العملات الصغيرة جداً مثل PEPE"""
-    if not price or price <= 0:
-        return "—"
-    if price >= 1000:
-        return f"${price:,.2f}"
-    elif price >= 1:
-        return f"${price:.4f}"
-    elif price >= 0.01:
-        return f"${price:.6f}"
-    elif price >= 0.0001:
-        return f"${price:.8f}"
-    else:
-        # عملات صغيرة جداً مثل PEPE — نعرض الأرقام المعنوية
-        return f"${price:.10f}".rstrip('0').rstrip('.')
-
-
 # ─── إعدادات ──────────────────────────────────────────────────────────────────
-COINGLASS_API_KEY = "eaf8efd7876142b0bac70affb6f65f2a"
-TELEGRAM_BOT_TOKEN = "8835139388:AAH9AVb06Nq8WbNkVsZ5bS1Dqrd10Wdvc84"
-TELEGRAM_CHANNEL_ID = "-1003942444248"
-COINGLASS_BASE = "https://open-api.coinglass.com/public/v2"
+TELEGRAM_BOT_TOKEN  = "8835139388:AAH9AVb06Nq8WbNkVsZ5bS1Dqrd10Wdvc84"
+TELEGRAM_CHANNEL_ID = "-1003942444248"   # Trade Lak Liquidity
+OKX_BASE            = "https://www.okx.com/api/v5"
+STATE_FILE          = "/root/trade_lak_bot/accumulation_state.json"
+SCAN_INTERVAL       = 15 * 60           # 15 دقيقة
 
 # ─── حدود التنبيه ─────────────────────────────────────────────────────────────
-# تنبيه 1: تراكم أولي
-ALERT1_OI_RISE_MIN = 0.3        # OI ارتفع +0.3% في ساعة
-ALERT1_FUNDING_MAX = 0.01       # Funding أقل من 0.01% (محايد أو سلبي)
-ALERT1_VOL_RISE_MIN = 2.0       # Volume ارتفع +2% في ساعة
-ALERT1_MIN_CONDITIONS = 3       # يكفي 3 شروط من 5
+ALERT1_OI_RISE_MIN       = 0.5    # OI ارتفع +0.5% في ساعة
+ALERT1_FUNDING_MAX       = 0.0001 # Funding < 0.01%
+ALERT1_VOL_RISE_MIN      = 2.0    # Volume ارتفع +2%
+ALERT1_MIN_CONDITIONS    = 3
 
-# تنبيه 2: تراكم متصاعد (أقوى)
-ALERT2_OI_RISE_MIN = 1.0        # OI ارتفع +1% في ساعة
-ALERT2_FUNDING_MAX = 0.005      # Funding محايد جداً أو سلبي
-ALERT2_VOL_RISE_MIN = 8.0       # Volume ارتفع +8%
-ALERT2_MIN_CONDITIONS = 4       # يحتاج 4 شروط من 5
-ALERT2_COOLDOWN_MINUTES = 30    # لا تكرر تنبيه 2 قبل 30 دقيقة
+ALERT2_OI_RISE_MIN       = 1.0    # OI ارتفع +1% في ساعة
+ALERT2_FUNDING_MAX       = 0.00005
+ALERT2_VOL_RISE_MIN      = 8.0
+ALERT2_MIN_CONDITIONS    = 4
+ALERT2_COOLDOWN_MINUTES  = 30
 
-# ─── حالة التنبيهات (لمنع التكرار) ───────────────────────────────────────────
-STATE_FILE = "/root/trade_lak_bot/accumulation_state.json"
-
-# ─── قائمة العملات والقطاعات ──────────────────────────────────────────────────
-SECTORS = {
-    "Layer1": ["BTC", "ETH", "SOL", "ADA", "AVAX", "DOT", "ATOM", "NEAR", "APT", "SUI", "ICP", "HBAR", "TON"],
-    "Layer2": ["POL", "ARB", "OP", "LRC", "IMX", "STRK"],
-    "DeFi":   ["UNI", "AAVE", "CRV", "COMP", "DYDX", "GMX", "PENDLE", "JUP"],
-    "Meme":   ["DOGE", "SHIB", "PEPE", "FLOKI", "BONK", "WIF", "BOME"],
-    "AI_Data":["FET", "RENDER", "GRT", "WLD", "ARKM"],
-    "Gaming": ["AXS", "SAND", "MANA", "ENJ", "GALA", "RON"],
-    "Infrastructure": ["LINK", "FIL", "AR", "THETA", "IOTA"],
-    "Exchange": ["BNB", "OKB", "CRO"],
-    "Other":  ["XRP", "LTC", "TRX", "XLM", "VET", "ALGO", "FTM", "MATIC"],
+# ─── فلتر العملات الغريبة (أسهم، معادن، stablecoins) ─────────────────────────
+EXCLUDE_COINS = {
+    # أسهم
+    'MU','SPCX','SNDK','SLX','SOXL','SKHYNIX','INTC','MRVL','O','MSFT','RDDT',
+    'HPE','WDC','MSTR','ASML','IREN','LPT','FLNC','NVDA','QQQ','CRCL',
+    # معادن وسلع
+    'XAU','XAG','XCU','XPT','XPD','CL','BZ',
+    # stablecoins
+    'USDC','USDT','BUSD','DAI','USDG','RLUSD','RESOLV',
+    # عملات غير معروفة / سيولة مصطنعة
+    'LAB','H','BEAT','NES','IP','ZBT','KITE','EWT','KGEN','LITE','ACU',
+    'EDGE','ZKP','OL','SYRUP','WAL','VANA','PUMP','LAYER','GIGGLE',
+    'NEIRO','MEME','PI','RIVER','COAI','ASTER','DRAM',
 }
 
-# خريطة عكسية: عملة -> قطاع
-COIN_SECTOR = {}
-for sector, coins in SECTORS.items():
-    for coin in coins:
-        COIN_SECTOR[coin] = sector
+# ─── مساعد تنسيق السعر ────────────────────────────────────────────────────────
+def _fmt_price(price: float) -> str:
+    if not price or price <= 0: return "—"
+    if price >= 1000:   return f"${price:,.2f}"
+    elif price >= 1:    return f"${price:.4f}"
+    elif price >= 0.01: return f"${price:.6f}"
+    elif price >= 0.0001: return f"${price:.8f}"
+    else: return f"${price:.10f}".rstrip('0').rstrip('.')
 
-# قائمة العملات المراقبة (الأكثر سيولة)
-WATCH_COINS = [
-    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT",
-    "LINK", "UNI", "ATOM", "NEAR", "APT", "SUI", "ARB", "OP", "PEPE",
-    "FIL", "LTC", "TRX", "ICP", "AAVE", "HBAR", "TON", "WIF", "INJ",
-]
-
-
-class AccumulationAlertSystem:
-    """نظام تنبيهات التراكم الصامت"""
-
-    def __init__(self):
-        self.cg_headers = {
-            'accept': 'application/json',
-            'coinglassSecret': COINGLASS_API_KEY
-        }
-        self.state = self._load_state()
-        logger.info("✅ Accumulation Alert System initialized")
-
-    def _load_state(self) -> Dict:
-        """تحميل حالة التنبيهات المحفوظة"""
-        try:
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, 'r') as f:
-                    return json.load(f)
-        except Exception:
-            pass
+# ─── OKX API helpers ──────────────────────────────────────────────────────────
+def _okx_get(path: str, params: dict = None) -> dict:
+    try:
+        r = requests.get(f"{OKX_BASE}{path}", params=params or {}, timeout=10)
+        return r.json()
+    except Exception as e:
+        logger.warning(f"OKX GET {path} error: {e}")
         return {}
 
-    def _save_state(self):
-        """حفظ حالة التنبيهات"""
-        try:
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            with open(STATE_FILE, 'w') as f:
-                json.dump(self.state, f, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving state: {e}")
+def get_top_coins_by_oi(min_oi_usd: float = 10_000_000, top_n: int = 35) -> List[str]:
+    """جلب أعلى العملات بـ OI من OKX (قائمة ديناميكية)"""
+    try:
+        # جلب OI
+        oi_data = _okx_get('/public/open-interest', {'instType': 'SWAP'})
+        # جلب الأسعار
+        tickers_data = _okx_get('/market/tickers', {'instType': 'SWAP'})
+        prices = {t['instId']: float(t.get('last', 0) or 0)
+                  for t in tickers_data.get('data', [])}
 
-    def _get_oi_data(self, symbol: str) -> Optional[Dict]:
-        """جلب بيانات OI من CoinGlass"""
-        try:
-            r = requests.get(
-                f"{COINGLASS_BASE}/open_interest",
-                headers=self.cg_headers,
-                params={'symbol': symbol},
-                timeout=10
-            )
-            data = r.json()
-            if data.get('code') == '0' and data.get('data'):
-                items = data['data']
-                # نأخذ السطر الأول (All exchanges)
-                item = items[0] if isinstance(items, list) else items
-                return item
-        except Exception as e:
-            logger.error(f"OI fetch error for {symbol}: {e}")
-        return None
+        results = []
+        for item in oi_data.get('data', []):
+            inst_id = item.get('instId', '')
+            if not inst_id.endswith('-USDT-SWAP'):
+                continue
+            coin = inst_id.replace('-USDT-SWAP', '')
+            if coin in EXCLUDE_COINS:
+                continue
+            price = prices.get(inst_id, 0)
+            oi_contracts = float(item.get('oi', 0) or 0)
+            oi_usd = oi_contracts * price
+            if oi_usd >= min_oi_usd:
+                results.append((coin, oi_usd))
 
-    def _get_funding_data(self, symbol: str) -> Optional[float]:
-        """جلب متوسط Funding Rate"""
-        try:
-            r = requests.get(
-                f"{COINGLASS_BASE}/funding",
-                headers=self.cg_headers,
-                params={'symbol': symbol},
-                timeout=10
-            )
-            data = r.json()
-            if data.get('code') == '0' and data.get('data'):
-                items = data['data']
-                item = items[0] if isinstance(items, list) else items
-                # نأخذ متوسط الـ funding من OKX أو Binance
-                u_margin = item.get('uMarginList', [])
-                rates = []
-                for ex in u_margin:
-                    if ex.get('exchangeName') in ('OKX', 'Binance', 'Bybit'):
-                        rates.append(ex.get('rate', 0))
-                if rates:
-                    return sum(rates) / len(rates)
-                return item.get('avgFundingRate', 0)
-        except Exception as e:
-            logger.error(f"Funding fetch error for {symbol}: {e}")
-        return None
+        results.sort(key=lambda x: x[1], reverse=True)
+        coins = [c[0] for c in results[:top_n]]
+        logger.info(f"📋 قائمة ديناميكية: {len(coins)} عملة (OI > ${min_oi_usd/1e6:.0f}M)")
+        return coins
+    except Exception as e:
+        logger.error(f"get_top_coins_by_oi error: {e}")
+        # fallback ثابت
+        return ['BTC','ETH','SOL','BNB','XRP','DOGE','AVAX','LINK','UNI',
+                'AAVE','INJ','SUI','NEAR','APT','ARB','OP','BCH','LTC',
+                'TRX','DOT','ATOM','HYPE','TAO','WLD','ORDI','FIL','ICP']
 
-    def _get_current_price(self, symbol: str) -> Optional[float]:
-        """جلب السعر الحالي من OKX"""
-        try:
-            r = requests.get(
-                f"https://www.okx.com/api/v5/market/ticker",
-                params={'instId': f"{symbol}-USDT"},
-                timeout=8
-            )
-            data = r.json()
-            if data.get('code') == '0' and data.get('data'):
-                return float(data['data'][0]['last'])
-        except Exception:
-            pass
-        return None
+def get_oi_history(coin: str, period: str = '1H', limit: int = 5) -> List[float]:
+    """جلب تاريخ OI لعملة (بالدولار)"""
+    d = _okx_get('/rubik/stat/contracts/open-interest-volume',
+                 {'ccy': coin, 'period': period})
+    rows = d.get('data', [])[:limit]
+    # كل صف: [timestamp, oi_usd, vol_usd]
+    return [float(r[1]) for r in rows]
 
-    def _analyze_symbol(self, symbol: str) -> Optional[Dict]:
-        """تحليل عملة واحدة وإرجاع نتيجة التراكم"""
-        oi_data = self._get_oi_data(symbol)
-        if not oi_data:
+def get_funding_rate(coin: str) -> float:
+    """جلب Funding Rate الحالي"""
+    d = _okx_get('/public/funding-rate', {'instId': f"{coin}-USDT-SWAP"})
+    items = d.get('data', [])
+    if items:
+        val = items[0].get('fundingRate', '') or '0'
+        try:
+            return float(val)
+        except:
+            return 0.0
+    return 0.0
+
+def get_long_short_ratio(coin: str) -> float:
+    """جلب نسبة Long/Short (> 1 = أغلبية Long)"""
+    d = _okx_get('/rubik/stat/contracts/long-short-account-ratio',
+                 {'ccy': coin, 'period': '1H'})
+    rows = d.get('data', [])
+    if rows and len(rows) >= 2:
+        current = float(rows[0][1])
+        prev    = float(rows[1][1])
+        return current, prev
+    elif rows:
+        return float(rows[0][1]), 1.0
+    return 1.0, 1.0
+
+def get_price(coin: str) -> float:
+    """جلب السعر الحالي"""
+    d = _okx_get('/market/ticker', {'instId': f"{coin}-USDT-SWAP"})
+    items = d.get('data', [])
+    if items:
+        return float(items[0].get('last', 0) or 0)
+    return 0.0
+
+# ─── تحليل عملة واحدة ────────────────────────────────────────────────────────
+def analyze_coin(coin: str) -> Optional[Dict]:
+    """تحليل عملة وإرجاع نتيجة التراكم"""
+    try:
+        # جلب تاريخ OI (آخر 5 ساعات)
+        oi_h1 = get_oi_history(coin, '1H', 5)
+        oi_h4 = get_oi_history(coin, '4H', 3)
+
+        if len(oi_h1) < 2:
             return None
 
-        funding = self._get_funding_data(symbol)
-        price = self._get_current_price(symbol)
+        # حساب التغير
+        oi_now_h1   = oi_h1[0]
+        oi_prev_h1  = oi_h1[1]
+        h1_oi_chg   = ((oi_now_h1 - oi_prev_h1) / oi_prev_h1 * 100) if oi_prev_h1 > 0 else 0
 
-        # ─── استخراج المؤشرات ─────────────────────────────────────────────────
-        h1_oi_chg = oi_data.get('h1OIChangePercent', 0) or 0
-        h4_oi_chg = oi_data.get('h4OIChangePercent', 0) or 0
-        m15_oi_chg = oi_data.get('m15OIChangePercent', 0) or 0
-        h1_vol_chg = oi_data.get('h1VolChangePercent', 0) or 0
-        h4_vol_chg = oi_data.get('h4VolChangePercent', 0) or 0
-        avg_funding = funding if funding is not None else (oi_data.get('avgFundingRateBySymbol', 0) or 0)
-        oi_total = oi_data.get('openInterest', 0) or 0
+        h4_oi_chg = 0.0
+        if len(oi_h4) >= 2 and oi_h4[1] > 0:
+            h4_oi_chg = (oi_h4[0] - oi_h4[1]) / oi_h4[1] * 100
 
-        # ─── تقييم الشروط ─────────────────────────────────────────────────────
-        conditions = {}
+        # Volume من نفس البيانات (العمود الثالث)
+        d_vol = _okx_get('/rubik/stat/contracts/open-interest-volume',
+                         {'ccy': coin, 'period': '1H'})
+        vol_rows = d_vol.get('data', [])
+        h1_vol_chg = 0.0
+        if len(vol_rows) >= 2:
+            v_now  = float(vol_rows[0][2])
+            v_prev = float(vol_rows[1][2])
+            if v_prev > 0:
+                h1_vol_chg = (v_now - v_prev) / v_prev * 100
 
-        # 1. OI يرتفع تدريجياً
-        oi_rising = h1_oi_chg >= ALERT1_OI_RISE_MIN and m15_oi_chg >= 0
-        conditions['oi_rising'] = {
-            'met': oi_rising,
-            'value': h1_oi_chg,
-            'label': f"OI +{h1_oi_chg:.2f}% (1h)"
-        }
+        # Funding Rate
+        funding = get_funding_rate(coin)
 
-        # 2. Funding محايد أو سلبي خفيف
-        funding_neutral = avg_funding <= ALERT1_FUNDING_MAX
-        conditions['funding_neutral'] = {
-            'met': funding_neutral,
-            'value': avg_funding,
-            'label': f"Funding {avg_funding*100:.4f}%"
-        }
+        # Long/Short Ratio
+        ls_current, ls_prev = get_long_short_ratio(coin)
+        ls_improving = ls_current > ls_prev  # نسبة Long تزيد
 
-        # 3. Volume يزيد
-        vol_rising = h1_vol_chg >= ALERT1_VOL_RISE_MIN
-        conditions['vol_rising'] = {
-            'met': vol_rising,
-            'value': h1_vol_chg,
-            'label': f"Volume +{h1_vol_chg:.1f}% (1h)"
-        }
+        # السعر
+        price = get_price(coin)
 
-        # 4. OI/Volume ratio يتحسن (OI يرتفع أسرع من Volume = تراكم)
-        oi_vol_ratio_chg = oi_data.get('oiVolRadioH1ChangePercent', 0) or 0
-        cvd_improving = oi_vol_ratio_chg > 0 and h1_oi_chg > 0
-        conditions['cvd_improving'] = {
-            'met': cvd_improving,
-            'value': oi_vol_ratio_chg,
-            'label': f"OI/Vol ratio +{oi_vol_ratio_chg:.2f}%"
-        }
-
-        # 5. OI يرتفع على مدى 4 ساعات أيضاً (تراكم مستمر)
-        oi_sustained = h4_oi_chg >= 0.5
-        conditions['oi_sustained'] = {
-            'met': oi_sustained,
-            'value': h4_oi_chg,
-            'label': f"OI +{h4_oi_chg:.2f}% (4h)"
+        # ─── تقييم الشروط ──────────────────────────────────────────────────
+        conditions = {
+            'oi_rising': {
+                'met': h1_oi_chg >= ALERT1_OI_RISE_MIN,
+                'value': h1_oi_chg,
+                'label': f"OI {h1_oi_chg:+.2f}% (1h)"
+            },
+            'funding_neutral': {
+                'met': funding <= ALERT1_FUNDING_MAX,
+                'value': funding,
+                'label': f"Funding {funding*100:+.4f}%"
+            },
+            'vol_rising': {
+                'met': h1_vol_chg >= ALERT1_VOL_RISE_MIN,
+                'value': h1_vol_chg,
+                'label': f"Volume {h1_vol_chg:+.1f}% (1h)"
+            },
+            'ls_improving': {
+                'met': ls_improving,
+                'value': ls_current,
+                'label': f"L/S Ratio {ls_current:.3f} ({'↑' if ls_improving else '↓'})"
+            },
+            'oi_sustained': {
+                'met': h4_oi_chg >= 0.5,
+                'value': h4_oi_chg,
+                'label': f"OI {h4_oi_chg:+.2f}% (4h)"
+            },
         }
 
         met_count = sum(1 for c in conditions.values() if c['met'])
-        sector = COIN_SECTOR.get(symbol, 'Other')
 
         return {
-            'symbol': symbol,
-            'sector': sector,
-            'price': price,
-            'conditions': conditions,
-            'met_count': met_count,
-            'h1_oi_chg': h1_oi_chg,
-            'h4_oi_chg': h4_oi_chg,
-            'h1_vol_chg': h1_vol_chg,
-            'avg_funding': avg_funding,
-            'oi_vol_ratio_chg': oi_vol_ratio_chg,
-            'oi_total': oi_total,
+            'symbol':       coin,
+            'price':        price,
+            'conditions':   conditions,
+            'met_count':    met_count,
+            'h1_oi_chg':    h1_oi_chg,
+            'h4_oi_chg':    h4_oi_chg,
+            'h1_vol_chg':   h1_vol_chg,
+            'avg_funding':  funding,
+            'ls_current':   ls_current,
+            'ls_improving': ls_improving,
         }
+    except Exception as e:
+        logger.error(f"analyze_coin({coin}) error: {e}")
+        return None
 
-    def _should_send_alert(self, symbol: str, alert_level: int) -> bool:
-        """فحص إذا كان يجب إرسال التنبيه (منع التكرار)"""
-        key = f"{symbol}_alert{alert_level}"
-        last_sent = self.state.get(key, 0)
-        now = time.time()
+# ─── إدارة الحالة (منع التكرار) ──────────────────────────────────────────────
+def _load_state() -> Dict:
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
 
-        # تنبيه 1: لا تكرر قبل 60 دقيقة
-        cooldown = 60 * 60 if alert_level == 1 else ALERT2_COOLDOWN_MINUTES * 60
+def _save_state(state: Dict):
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f)
+    except Exception as e:
+        logger.warning(f"State save error: {e}")
 
-        return (now - last_sent) > cooldown
+def _can_alert(state: Dict, coin: str, level: int) -> bool:
+    key = f"{coin}_alert{level}"
+    last = state.get(key, 0)
+    cooldown = ALERT2_COOLDOWN_MINUTES * 60 if level == 2 else 60 * 60
+    return (time.time() - last) > cooldown
 
-    def _mark_alert_sent(self, symbol: str, alert_level: int):
-        """تسجيل وقت إرسال التنبيه"""
-        key = f"{symbol}_alert{alert_level}"
-        self.state[key] = time.time()
-        self._save_state()
+def _mark_alert(state: Dict, coin: str, level: int):
+    state[f"{coin}_alert{level}"] = time.time()
 
-    def _send_telegram(self, message: str) -> bool:
-        """إرسال رسالة لقناة التليجرام"""
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": TELEGRAM_CHANNEL_ID,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            r = requests.post(url, json=payload, timeout=10)
-            return r.status_code == 200
-        except Exception as e:
-            logger.error(f"Telegram send error: {e}")
-            return False
+# ─── إرسال Telegram ───────────────────────────────────────────────────────────
+def send_telegram(msg: str) -> bool:
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={'chat_id': TELEGRAM_CHANNEL_ID, 'text': msg,
+                  'parse_mode': 'HTML', 'disable_web_page_preview': True},
+            timeout=10
+        )
+        return r.status_code == 200
+    except Exception as e:
+        logger.error(f"Telegram error: {e}")
+        return False
 
-    def _format_alert1(self, analysis: Dict) -> str:
-        """صيغة تنبيه 1 — تراكم أولي"""
-        symbol = analysis['symbol']
-        sector = analysis['sector']
-        price = analysis['price']
-        h1_oi = analysis['h1_oi_chg']
-        h1_vol = analysis['h1_vol_chg']
-        funding = analysis['avg_funding'] * 100
-        now = datetime.now()
+# ─── تنسيق الرسائل ────────────────────────────────────────────────────────────
+def format_alert1(analysis: Dict) -> str:
+    coin    = analysis['symbol']
+    price   = _fmt_price(analysis['price'])
+    h1_oi   = analysis['h1_oi_chg']
+    h1_vol  = analysis['h1_vol_chg']
+    funding = analysis['avg_funding'] * 100
+    ls      = analysis['ls_current']
+    now     = datetime.now()
 
-        price_str = _fmt_price(price)
-
-        # بناء قائمة الشروط المتحققة
-        cond_lines = []
-        for k, c in analysis['conditions'].items():
-            icon = "✅" if c['met'] else "⬜"
-            cond_lines.append(f"  {icon} {c['label']}")
-
-        msg = f"""🔔 <b>تنبيه أول — تراكم صامت</b>
-━━━━━━━━━━━━━━━━━━━━━
-💎 <b>{symbol}/USDT</b> — {sector}
-💰 السعر الحالي: <b>{price_str}</b>
-━━━━━━━━━━━━━━━━━━━━━
-📊 <b>المؤشرات:</b>
-{chr(10).join(cond_lines)}
-━━━━━━━━━━━━━━━━━━━━━
-📈 OI (1h): <b>{h1_oi:+.2f}%</b>
-📦 Volume (1h): <b>{h1_vol:+.1f}%</b>
-💸 Funding: <b>{funding:+.4f}%</b>
-━━━━━━━━━━━━━━━━━━━━━
-🕐 {now.strftime('%H:%M:%S')}  |  📅 {now.strftime('%Y-%m-%d')}"""
-        return msg
-
-    def _format_alert2(self, analysis: Dict) -> str:
-        """صيغة تنبيه 2 — تراكم متصاعد"""
-        symbol = analysis['symbol']
-        sector = analysis['sector']
-        price = analysis['price']
-        h1_oi = analysis['h1_oi_chg']
-        h4_oi = analysis['h4_oi_chg']
-        h1_vol = analysis['h1_vol_chg']
-        funding = analysis['avg_funding'] * 100
-        oi_vol = analysis['oi_vol_ratio_chg']
-        now = datetime.now()
-
-        price_str = _fmt_price(price)
-
-        # بناء قائمة الشروط
-        cond_lines = []
-        for k, c in analysis['conditions'].items():
-            icon = "✅" if c['met'] else "⬜"
-            cond_lines.append(f"  {icon} {c['label']}")
-
-        msg = f"""🚨 <b>تنبيه ثانٍ — تراكم متصاعد</b>
-━━━━━━━━━━━━━━━━━━━━━
-💎 <b>{symbol}/USDT</b> — {sector}
-💰 السعر الحالي: <b>{price_str}</b>
-━━━━━━━━━━━━━━━━━━━━━
-📊 <b>المؤشرات:</b>
-{chr(10).join(cond_lines)}
-━━━━━━━━━━━━━━━━━━━━━
-📈 OI (1h): <b>{h1_oi:+.2f}%</b>  |  OI (4h): <b>{h4_oi:+.2f}%</b>
-📦 Volume (1h): <b>{h1_vol:+.1f}%</b>
-💸 Funding: <b>{funding:+.4f}%</b>
-📉 OI/Vol Ratio: <b>{oi_vol:+.2f}%</b>
-━━━━━━━━━━━━━━━━━━━━━
-⚡ <b>التراكم يتصاعد — راقب الاختراق</b>
-━━━━━━━━━━━━━━━━━━━━━
-🕐 {now.strftime('%H:%M:%S')}  |  📅 {now.strftime('%Y-%m-%d')}"""
-        return msg
-
-    def scan_all(self):
-        """مسح جميع العملات وإرسال التنبيهات المناسبة"""
-        logger.info(f"🔍 Scanning {len(WATCH_COINS)} coins for accumulation signals...")
-        alerts_sent = 0
-
-        for i, symbol in enumerate(WATCH_COINS):
-            try:
-                analysis = self._analyze_symbol(symbol)
-                if not analysis:
-                    continue
-
-                met = analysis['met_count']
-                h1_oi = analysis['h1_oi_chg']
-                h1_vol = analysis['h1_vol_chg']
-                avg_funding = analysis['avg_funding']
-
-                # ─── تنبيه 2: تراكم متصاعد (شروط أقوى) ──────────────────────
-                is_alert2 = (
-                    met >= ALERT2_MIN_CONDITIONS and
-                    h1_oi >= ALERT2_OI_RISE_MIN and
-                    h1_vol >= ALERT2_VOL_RISE_MIN and
-                    avg_funding <= ALERT2_FUNDING_MAX
-                )
-
-                if is_alert2 and self._should_send_alert(symbol, 2):
-                    msg = self._format_alert2(analysis)
-                    if self._send_telegram(msg):
-                        self._mark_alert_sent(symbol, 2)
-                        # إعادة ضبط تنبيه 1 أيضاً
-                        self._mark_alert_sent(symbol, 1)
-                        alerts_sent += 1
-                        logger.info(f"🚨 Alert 2 sent for {symbol} (conditions: {met}/5)")
-                    continue
-
-                # ─── تنبيه 1: تراكم أولي ──────────────────────────────────────
-                is_alert1 = (
-                    met >= ALERT1_MIN_CONDITIONS and
-                    h1_oi >= ALERT1_OI_RISE_MIN and
-                    avg_funding <= ALERT1_FUNDING_MAX
-                )
-
-                if is_alert1 and self._should_send_alert(symbol, 1):
-                    msg = self._format_alert1(analysis)
-                    if self._send_telegram(msg):
-                        self._mark_alert_sent(symbol, 1)
-                        alerts_sent += 1
-                        logger.info(f"🔔 Alert 1 sent for {symbol} (conditions: {met}/5)")
-
-                # تأخير بسيط لتجنب rate limiting
-                if i % 5 == 4:
-                    time.sleep(1)
-
-            except Exception as e:
-                logger.error(f"Error analyzing {symbol}: {e}")
-                continue
-
-        logger.info(f"✅ Scan complete. Alerts sent: {alerts_sent}")
-        return alerts_sent
-
-
-def main():
-    """تشغيل المسح الدوري"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s | %(levelname)s | %(message)s',
-        handlers=[
-            logging.FileHandler('/root/trade_lak_bot/accumulation_alert.log'),
-            logging.StreamHandler()
-        ]
+    cond_lines = '\n'.join(
+        f"  {'✅' if c['met'] else '⬜'} {c['label']}"
+        for c in analysis['conditions'].values()
     )
 
-    system = AccumulationAlertSystem()
+    return (
+        f"🔔 <b>تنبيه أول — تراكم صامت</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <b>{coin}/USDT</b>\n"
+        f"💰 السعر: <b>{price}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>المؤشرات:</b>\n"
+        f"{cond_lines}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 OI (1h): <b>{h1_oi:+.2f}%</b>\n"
+        f"📦 Volume (1h): <b>{h1_vol:+.1f}%</b>\n"
+        f"💸 Funding: <b>{funding:+.4f}%</b>\n"
+        f"⚖️ L/S Ratio: <b>{ls:.3f}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 {now.strftime('%H:%M')}  |  📅 {now.strftime('%Y-%m-%d')}"
+    )
 
-    # مسح كل 15 دقيقة
-    SCAN_INTERVAL = 15 * 60
+def format_alert2(analysis: Dict) -> str:
+    coin    = analysis['symbol']
+    price   = _fmt_price(analysis['price'])
+    h1_oi   = analysis['h1_oi_chg']
+    h4_oi   = analysis['h4_oi_chg']
+    h1_vol  = analysis['h1_vol_chg']
+    funding = analysis['avg_funding'] * 100
+    ls      = analysis['ls_current']
+    now     = datetime.now()
 
-    logger.info("🚀 Accumulation Alert System started")
-    logger.info(f"📡 Monitoring {len(WATCH_COINS)} coins every {SCAN_INTERVAL//60} minutes")
+    cond_lines = '\n'.join(
+        f"  {'✅' if c['met'] else '⬜'} {c['label']}"
+        for c in analysis['conditions'].values()
+    )
+
+    return (
+        f"🚨 <b>تنبيه ثانٍ — تراكم متصاعد</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 <b>{coin}/USDT</b>\n"
+        f"💰 السعر: <b>{price}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>المؤشرات:</b>\n"
+        f"{cond_lines}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 OI (1h): <b>{h1_oi:+.2f}%</b>  |  OI (4h): <b>{h4_oi:+.2f}%</b>\n"
+        f"📦 Volume (1h): <b>{h1_vol:+.1f}%</b>\n"
+        f"💸 Funding: <b>{funding:+.4f}%</b>\n"
+        f"⚖️ L/S Ratio: <b>{ls:.3f}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <b>التراكم يتصاعد — راقب الاختراق</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 {now.strftime('%H:%M')}  |  📅 {now.strftime('%Y-%m-%d')}"
+    )
+
+# ─── حلقة المسح الرئيسية ─────────────────────────────────────────────────────
+def scan_all():
+    """مسح جميع العملات وإرسال التنبيهات"""
+    # جلب القائمة الديناميكية
+    watch_coins = get_top_coins_by_oi(min_oi_usd=10_000_000, top_n=35)
+    logger.info(f"🔍 Scanning {len(watch_coins)} coins for accumulation signals...")
+
+    state = _load_state()
+    alerts_sent = 0
+
+    for i, coin in enumerate(watch_coins):
+        try:
+            analysis = analyze_coin(coin)
+            if not analysis:
+                continue
+
+            met       = analysis['met_count']
+            h1_oi     = analysis['h1_oi_chg']
+            h1_vol    = analysis['h1_vol_chg']
+            funding   = analysis['avg_funding']
+
+            # تنبيه 2: تراكم متصاعد
+            is_alert2 = (
+                met >= ALERT2_MIN_CONDITIONS and
+                h1_oi >= ALERT2_OI_RISE_MIN and
+                h1_vol >= ALERT2_VOL_RISE_MIN and
+                funding <= ALERT2_FUNDING_MAX
+            )
+            if is_alert2 and _can_alert(state, coin, 2):
+                msg = format_alert2(analysis)
+                if send_telegram(msg):
+                    _mark_alert(state, coin, 2)
+                    _mark_alert(state, coin, 1)
+                    alerts_sent += 1
+                    logger.info(f"🚨 Alert 2 sent for {coin} ({met}/5 conditions)")
+                continue
+
+            # تنبيه 1: تراكم أولي
+            is_alert1 = (
+                met >= ALERT1_MIN_CONDITIONS and
+                h1_oi >= ALERT1_OI_RISE_MIN and
+                funding <= ALERT1_FUNDING_MAX
+            )
+            if is_alert1 and _can_alert(state, coin, 1):
+                msg = format_alert1(analysis)
+                if send_telegram(msg):
+                    _mark_alert(state, coin, 1)
+                    alerts_sent += 1
+                    logger.info(f"🔔 Alert 1 sent for {coin} ({met}/5 conditions)")
+
+            # تأخير بسيط لتجنب rate limiting
+            if i % 5 == 4:
+                time.sleep(1)
+
+        except Exception as e:
+            logger.error(f"Error scanning {coin}: {e}")
+            continue
+
+    _save_state(state)
+    logger.info(f"✅ Scan complete. Alerts sent: {alerts_sent}")
+    return alerts_sent
+
+def main():
+    logger.info("🚀 Accumulation Alert System v2 — OKX Only")
+    logger.info(f"   Scan interval: {SCAN_INTERVAL//60} min | Alert1: {ALERT1_MIN_CONDITIONS}+ cond | Alert2: {ALERT2_MIN_CONDITIONS}+ cond")
 
     while True:
         try:
-            system.scan_all()
+            scan_all()
         except Exception as e:
-            logger.error(f"Scan error: {e}")
-
+            logger.error(f"Scan loop error: {e}")
         logger.info(f"⏳ Next scan in {SCAN_INTERVAL//60} minutes...")
         time.sleep(SCAN_INTERVAL)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

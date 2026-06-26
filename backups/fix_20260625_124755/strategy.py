@@ -267,31 +267,6 @@ class StrategyEngine:
     # ----------------------------------------------------------------
 
 
-
-    def sync_trades_with_balance(self, exchange):
-        """
-        BUG-1 FIX: مزامنة open_spot_trades مع الرصيد الفعلي في OKX
-        BUG-3 FIX: حذف الصفقات التي لا يوجد لها رصيد فعلي
-        يُستدعى عند بدء التشغيل وكل 10 دورات
-        """
-        try:
-            bal = exchange.fetch_balance({'type': 'spot'})
-            removed = []
-            for symbol in list(self.open_spot_trades.keys()):
-                coin = symbol.split('/')[0]
-                total = float(bal.get(coin, {}).get('total', 0) or 0)
-                if total < 0.0001:
-                    logger.warning(f"🧹 BUG-1/3 FIX: {symbol} في open_trades لكن رصيده {total:.8f} — حُذف")
-                    del self.open_spot_trades[symbol]
-                    removed.append(symbol)
-            if removed:
-                self._save_trades()
-                logger.info(f"✅ sync_trades: حُذف {len(removed)} صفقة وهمية: {removed}")
-            return removed
-        except Exception as e:
-            logger.warning(f"⚠️ sync_trades_with_balance: {e}")
-            return []
-
     def _reload_if_changed(self):
         """إعادة تحميل الصفقات إذا تغيّر الملف خارجياً"""
         try:

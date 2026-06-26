@@ -37,7 +37,7 @@ OKX_BASE           = "https://www.okx.com/api/v5"
 RESISTANCE_LOOKBACK  = 24      # عدد الشموع للخلف لحساب المقاومة
 BREAKOUT_CONFIRM_PCT = 0.003   # +0.3% فوق المقاومة
 VOL_MULTIPLIER_MIN   = 1.5     # Volume أعلى من المتوسط بـ 1.5x
-OI_RISE_MIN_H1       = 0.5     # OI ارتفع +0.5% في ساعة
+OI_RISE_MIN_H1       = 0.3     # OI ارتفع +0.3% في ساعة (مخفف للسوق الهابط)
 
 # ─── حدود المرحلة 2: Retest ───────────────────────────────────────────────────
 RETEST_TOUCH_PCT     = 0.008   # السعر يصل لمستوى الاختراق ±0.8%
@@ -123,10 +123,7 @@ def calc_rsi(closes: List[float], period: int = 14) -> float:
 class BreakoutSignalSystem:
 
     def __init__(self):
-        self.cg_headers = {
-            'accept': 'application/json',
-            'coinglassSecret': COINGLASS_API_KEY
-        }
+        self.cg_headers = {}  # Coinglass معطّل — نستخدم OKX API مباشرة
         self.state = self._load_state()
         logger.info("✅ Breakout Signal System v4 initialized (with Retest confirmation)")
 
@@ -230,63 +227,101 @@ class BreakoutSignalSystem:
         return None
 
     def _get_oi_data(self, symbol: str) -> Optional[Dict]:
+        """جلب Open Interest من OKX مباشرة (بدون Coinglass)"""
         try:
+            # OI الحالي
             r = requests.get(
-                f"{COINGLASS_BASE}/open_interest",
-                headers=self.cg_headers,
-                params={'symbol': symbol},
+                f"{OKX_BASE}/public/open-interest",
+                params={'instType': 'SWAP', 'instId': f"{symbol}-USDT-SWAP"},
                 timeout=10
             )
             data = r.json()
             if data.get('code') == '0' and data.get('data'):
-                items = data['data']
-                return items[0] if isinstance(items, list) else items
+                oi_now = float(data['data'][0].get('oiCcy', 0) or 0)
+            else:
+                return None
+
+            # OI قبل ساعة (من تاريخ الشموع)
+            r2 = requests.get(
+                f"{OKX_BASE}/market/candles",
+                params={'instId': f"{symbol}-USDT-SWAP", 'bar': '1H', 'limit': '3'},
+                timeout=10
+            )
+            data2 = r2.json()
+            oi_1h_ago = oi_now
+            if data2.get('code') == '0' and data2.get('data') and len(data2['data']) >= 2:
+                # نستخدم volume كمؤشر بديل لتغير OI
+                vol_now  = float(data2['data'][0][5] or 0)
+                vol_prev = float(data2['data'][1][5] or 0)
+                if vol_prev > 0:
+                    vol_change = (vol_now - vol_prev) / vol_prev * 100
+                    # تقدير تغير OI بناءً على Volume
+                    oi_chg_est = vol_change * 0.3  # تقريبي
+                else:
+                    oi_chg_est = 0.0
+            else:
+                oi_chg_est = 0.0
+
+            # جلب تغير OI الفعلي من endpoint مخصص
+            r3 = requests.get(
+                f"{OKX_BASE}/rubik/stat/contracts/open-interest-volume",
+                params={'ccy': symbol, 'period': '1H'},
+                timeout=10
+            )
+            data3 = r3.json()
+            if data3.get('code') == '0' and data3.get('data') and len(data3['data']) >= 2:
+                oi_recent = float(data3['data'][0][1] or 0)
+                oi_prev   = float(data3['data'][1][1] or 0)
+                if oi_prev > 0:
+                    oi_chg_est = (oi_recent - oi_prev) / oi_prev * 100
+
+            return {
+                'openInterest': oi_now,
+                'h1OIChangePercent': oi_chg_est,
+            }
         except Exception as e:
             logger.error(f"OI {symbol}: {e}")
         return None
 
     def _get_funding_rate(self, symbol: str) -> float:
+        """جلب Funding Rate من OKX مباشرة (بدون Coinglass)"""
         try:
             r = requests.get(
-                f"{COINGLASS_BASE}/funding_rates_chart",
-                headers=self.cg_headers,
-                params={'symbol': symbol, 'exchange': 'OKX'},
+                f"{OKX_BASE}/public/funding-rate",
+                params={'instId': f"{symbol}-USDT-SWAP"},
                 timeout=10
             )
             data = r.json()
             if data.get('code') == '0' and data.get('data'):
-                d = data['data']
-                if isinstance(d, list) and d:
-                    return float(d[-1].get('fundingRate', 0) or 0)
-                elif isinstance(d, dict):
-                    return float(d.get('fundingRate', 0) or 0)
-        except Exception:
-            pass
+                return float(data['data'][0].get('fundingRate', 0) or 0)
+        except Exception as e:
+            logger.debug(f"Funding {symbol}: {e}")
         return 0.0
 
     def _get_liquidation_heatmap(self, symbol: str, current_price: float) -> Dict:
+        """تقدير مناطق السيولة من Order Book (بدون Coinglass)"""
         result = {'liq_above': 0.0, 'liq_below': 0.0, 'has_liq_above': False}
         try:
             r = requests.get(
-                f"{COINGLASS_BASE}/liquidation_map",
-                headers=self.cg_headers,
-                params={'symbol': symbol, 'range': '12h'},
+                f"{OKX_BASE}/market/books",
+                params={'instId': f"{symbol}-USDT", 'sz': '20'},
                 timeout=10
             )
             data = r.json()
             if data.get('code') == '0' and data.get('data'):
-                d = data['data']
-                prices = d.get('prices', [])
-                longs  = d.get('longs', [])
-                shorts = d.get('shorts', [])
-                if prices and shorts:
-                    above = sum(s for p, s in zip(prices, shorts) if float(p) > current_price * (1 + LIQ_ABOVE_PCT))
-                    below = sum(l for p, l in zip(prices, longs)  if float(p) < current_price * (1 - LIQ_ABOVE_PCT))
-                    result['liq_above'] = above
-                    result['liq_below'] = below
-                    result['has_liq_above'] = above > 0
+                book = data['data'][0]
+                asks = book.get('asks', [])  # [price, size, ...]
+                bids = book.get('bids', [])
+                # تجميع السيولة فوق وتحت السعر الحالي
+                liq_above = sum(float(a[1]) * float(a[0]) for a in asks
+                                if float(a[0]) > current_price * (1 + LIQ_ABOVE_PCT))
+                liq_below = sum(float(b[1]) * float(b[0]) for b in bids
+                                if float(b[0]) < current_price * (1 - LIQ_ABOVE_PCT))
+                result['liq_above'] = liq_above
+                result['liq_below'] = liq_below
+                result['has_liq_above'] = liq_above > liq_below * 0.5
         except Exception as e:
-            logger.debug(f"Liq heatmap {symbol}: {e}")
+            logger.debug(f"Order book {symbol}: {e}")
         return result
 
     # ─── التحليل الفني ────────────────────────────────────────────────────────

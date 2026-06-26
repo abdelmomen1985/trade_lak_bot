@@ -280,7 +280,6 @@ class PeriodicReviewSystem:
         apis = {
             'OKX':         self._test_okx,
             'CoinGlass':   self._test_coinglass,
-            'CryptoPanic': self._test_cryptopanic,
             'Telegram':    self._test_telegram,
         }
         all_ok = True
@@ -509,16 +508,6 @@ class PeriodicReviewSystem:
             lines.append(f"  ❌ OKX API: {str(e)[:50]}")
             all_ok = False
 
-        # 3. CryptoPanic
-        try:
-            resp = requests.get(
-                "https://cryptopanic.com/api/growth/v2/posts/?auth_token=afed90b669cebc6535f88540ecb1679ee551facc&public=true",
-                timeout=8
-            )
-            if resp.status_code == 200:
-                lines.append("  ✅ CryptoPanic (afed90b6...): يعمل")
-            else:
-                lines.append(f"  ⚠️ CryptoPanic: استجابة {resp.status_code}")
         except Exception as e:
             lines.append(f"  ❌ CryptoPanic: {str(e)[:40]}")
 

@@ -138,6 +138,22 @@ def check_coinglass() -> tuple:
         return False, str(e)
 
 
+# ─── 5. فحص آخر نشاط للبوت (هل يعمل فعلاً؟) ─────────────
+def check_bot_activity() -> tuple:
+    try:
+        log_file = f'{BOT_DIR}/logs/bot.log'
+        if not os.path.exists(log_file):
+            return False, "ملف السجل غير موجود"
+        mtime = os.path.getmtime(log_file)
+        age_minutes = (time.time() - mtime) / 60
+        if age_minutes > 10:
+            return False, f"آخر نشاط منذ {age_minutes:.0f} دقيقة"
+        logger.info(f"✅ نشاط البوت: آخر سجل منذ {age_minutes:.1f} دقيقة")
+        _clear_alert('bot_activity')
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
 # ─── 6. فحص الرصيد (هل لا يزال موجوداً؟) ────────────────
 def check_balance() -> tuple:
     try:
@@ -245,6 +261,18 @@ def run():
                 else:
                     _clear_alert(key)
 
+            # ─── فحص نشاط البوت ───────────────────────────
+            bot_ok, bot_err = check_bot_activity()
+            if not bot_ok:
+                if _can_alert('bot_activity'):
+                    send_telegram(
+                        f"⚠️ <b>البوت الرئيسي متوقف!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📋 السبب: {bot_err}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔄 systemd سيعيد التشغيل تلقائياً"
+                    )
+                    _mark_alerted('bot_activity')
 
             # ─── فحص Flash Crash Sniper ───────────────────
             flash_ok, flash_err = check_flash_sniper_log()
@@ -275,6 +303,7 @@ def run():
             # ─── تقرير دوري كل ساعة ───────────────────────
             if time.time() - last_report_time > 3600:
                 results = {
+                    'البوت الرئيسي':       (bot_ok, bot_err),
                     'Flash Crash Sniper':  (flash_ok, flash_err),
                     'OKX API':             api_checks['OKX API'],
                     'الرصيد':              (bal_ok, bal_err),

@@ -13,8 +13,8 @@ OKX_PASSPHRASE   = "Ll@12%553"
 # --- CoinGlass API ---
 COINGLASS_API_KEY = "eaf8efd7876142b0bac70affb6f65f2a"
 # --- CryptoPanic News API ---
-CRYPTOPANIC_API_KEY = "afed90b669cebc6535f88540ecb1679ee551facc"
-CRYPTOPANIC_PLAN    = "growth"
+# CRYPTOPANIC_API_KEY = "afed90b669cebc6535f88540ecb1679ee551facc"  # ملغى 25 يونيو 2026
+# CRYPTOPANIC_PLAN    = "growth"  # ملغى 25 يونيو 2026
 # --- BscScan / EtherScan On-Chain (optional) ---
 BSCSCAN_API_KEY  = "W994R5JJQQVGX1ZI8KD8ZIFAFZ52RSUMMC"
 ETHERSCAN_API_KEY = "W994R5JJQQVGX1ZI8KD8ZIFAFZ52RSUMMC"
@@ -48,7 +48,7 @@ MIN_ORDER_USDT      = 100       # الحد الأدنى لأي صفقة $100
 PAUSE_NEW_TRADES    = False      # True = إيقاف مؤقت حتى تغلق الصفقات القائمة
 
 # --- Banned Assets / الأصول المحظورة ---
-BANNED_GOLD_TOKENS  = {'XAUT', 'PAXG', 'XAUM', 'XGOLD', 'PMGT', 'DGLD', 'TGOLD'}
+BANNED_GOLD_TOKENS  = {'XAUT', 'PAXG', 'XAUM', 'XGOLD', 'PMGT', 'DGLD', 'TGOLD', 'BTC'}
 # الذهب الرقمي محظور نهائياً — لا قيمة مضاربية كافية
 
 # --- Market Scanner Settings / إعدادات فحص السوق ---

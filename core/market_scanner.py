@@ -90,7 +90,7 @@ class MarketScanner:
                 reverse=True
             )
             stable_coins = {
-                'USDT','USDC','BUSD','DAI','TUSD','USDP','FRAX','USDD','FDUSD',
+                'USDT','USDC','BUSD','DAI','TUSD','USDP','FRAX','USDD','FDUSD','BTC',
                 'USDG','RLUSD','PYUSD','GUSD','SUSD','LUSD','CRVUSD','USDE','USDB',
                 'USDX','CUSD','HUSD','EURS','USDK','USDJ','XUSD','USDQ',
                 'USDN','USDH','USDR','USDV','USDY','USDZ','EURC','EUROC'
