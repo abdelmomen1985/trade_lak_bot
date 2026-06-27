@@ -94,20 +94,11 @@ def check_services() -> list:
     issues = []
     for svc in SERVICES:
         try:
-            # محاولة أولى
             result = subprocess.run(
                 ['systemctl', 'is-active', svc],
-                capture_output=True, text=True, timeout=15
+                capture_output=True, text=True, timeout=5
             )
             status = result.stdout.strip()
-            if status != 'active':
-                # retry بعد 3 ثوانٍ قبل الحكم
-                time.sleep(3)
-                result2 = subprocess.run(
-                    ['systemctl', 'is-active', svc],
-                    capture_output=True, text=True, timeout=15
-                )
-                status = result2.stdout.strip()
             if status != 'active':
                 issues.append((svc, status))
                 logger.warning(f"⚠️ خدمة {svc}: {status}")
@@ -115,19 +106,7 @@ def check_services() -> list:
                 logger.info(f"✅ خدمة {svc}: active")
                 _clear_alert(f'svc_{svc}')
         except Exception as e:
-            # عند timeout: تحقق عبر طريقة بديلة
-            try:
-                r2 = subprocess.run(
-                    ['systemctl', 'show', svc, '--property=ActiveState'],
-                    capture_output=True, text=True, timeout=15
-                )
-                if 'ActiveState=active' in r2.stdout:
-                    logger.info(f"✅ خدمة {svc}: active (fallback check)")
-                    _clear_alert(f'svc_{svc}')
-                else:
-                    issues.append((svc, f'خطأ: {e}'))
-            except Exception as e2:
-                issues.append((svc, f'خطأ: {e2}'))
+            issues.append((svc, f'خطأ: {e}'))
     return issues
 
 # ─── 2. فحص الاتصال بـ OKX ────────────────────────────────
@@ -181,38 +160,15 @@ def check_flash_sniper_log() -> tuple:
     try:
         result = subprocess.run(
             ['systemctl', 'is-active', 'flash-crash-sniper'],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=5
         )
         status = result.stdout.strip()
         if status == 'active':
             logger.info("✅ Flash Crash Sniper: active (systemd)")
             _clear_alert('flash_sniper_log')
             return True, None
-        # retry
-        time.sleep(3)
-        result2 = subprocess.run(
-            ['systemctl', 'is-active', 'flash-crash-sniper'],
-            capture_output=True, text=True, timeout=15
-        )
-        status = result2.stdout.strip()
-        if status == 'active':
-            logger.info("✅ Flash Crash Sniper: active (retry)")
-            _clear_alert('flash_sniper_log')
-            return True, None
         return False, f"flash-crash-sniper: {status}"
     except Exception as e:
-        # fallback
-        try:
-            r2 = subprocess.run(
-                ['systemctl', 'show', 'flash-crash-sniper', '--property=ActiveState'],
-                capture_output=True, text=True, timeout=15
-            )
-            if 'ActiveState=active' in r2.stdout:
-                logger.info("✅ Flash Crash Sniper: active (fallback)")
-                _clear_alert('flash_sniper_log')
-                return True, None
-        except Exception:
-            pass
         return False, str(e)
 
 # ─── بناء رسالة التقرير الدوري ────────────────────────────

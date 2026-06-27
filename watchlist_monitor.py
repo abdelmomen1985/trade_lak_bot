@@ -5,7 +5,7 @@ Watchlist Monitor — يراقب عملات محددة ويُرسل تنبيها
 """
 import sys, time, requests, numpy as np, logging
 sys.path.insert(0, '/root/trade_lak_bot')
-from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_PRIVATE_CHAT as TELEGRAM_CHAT_ID
+from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PRIVATE_CHAT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,8 +49,13 @@ WATCHLIST = {
         'rsi4h_entry': 30,
         'note': 'عملة جديدة — ينتظر RSI < 30 مع BB السفلي'
     },
+    'NIGHT': {
+        'symbol': 'NIGHT-USDT',
+        'min_score': 6,
+        'rsi4h_entry': 35,
+        'note': 'RSI 4H=46 حالياً — ننتظر هبوطه للمنطقة 28-32'
+    },
 }
-
 # تتبع آخر تنبيه لكل عملة (لتجنب التكرار)
 last_alert = {}
 ALERT_COOLDOWN = 3600  # ساعة بين كل تنبيهين لنفس العملة
@@ -200,6 +205,34 @@ def analyze_coin(name, config):
         score += 1
         reasons.append('Volume مرتفع')
 
+    # --- منطق التجميع ---
+    acc_score = 0
+    acc_reasons = []
+    # RSI 4H في منطقة التجميع (35-50) — ليس ذروة بيع لكن يتراجع
+    if 35 <= rsi_4h <= 50:
+        acc_score += 2
+        acc_reasons.append(f'RSI 4H={rsi_4h:.1f} (منطقة تجميع)')
+    elif 30 <= rsi_4h < 35:
+        acc_score += 3
+        acc_reasons.append(f'RSI 4H={rsi_4h:.1f} (تجميع قوي)')
+    # RSI 1H في منطقة التجميع
+    if 35 <= rsi_1h <= 50:
+        acc_score += 1
+        acc_reasons.append(f'RSI 1H={rsi_1h:.1f} (منطقة تجميع)')
+    # السعر بين BB Mid وBB Lower
+    if bb_lower and bb_mid:
+        if bb_lower <= price <= bb_mid:
+            acc_score += 2
+            acc_reasons.append('السعر بين BB Lower وBB Mid (منطقة تجميع)')
+    # MACD Histogram يتحسن (أقل سلبية)
+    if macd_hist > -0.0001:
+        acc_score += 1
+        acc_reasons.append('MACD يتعافى')
+    # تغيير 24H سلبي طفيف (ضغط بيع خفيف = تجميع)
+    if -5 <= ticker['change_pct'] <= -1:
+        acc_score += 1
+        acc_reasons.append(f'تراجع طفيف {ticker["change_pct"]:.1f}% (تجميع)')
+
     return {
         'name': name,
         'symbol': symbol,
@@ -209,8 +242,11 @@ def analyze_coin(name, config):
         'rsi_4h': rsi_4h,
         'macd_hist': macd_hist,
         'bb_lower': bb_lower,
+        'bb_mid': bb_mid,
         'score': score,
         'reasons': reasons,
+        'acc_score': acc_score,
+        'acc_reasons': acc_reasons,
         'min_score': config['min_score'],
         'note': config['note']
     }
