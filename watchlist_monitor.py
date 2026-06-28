@@ -55,6 +55,48 @@ WATCHLIST = {
         'rsi4h_entry': 35,
         'note': 'RSI 4H=46 حالياً — ننتظر هبوطه للمنطقة 28-32'
     },
+    "NEAR": {
+        "symbol": "NEAR-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 28,
+        "note": "RSI 4H=24.4 ذروة بيع شديدة — فرصة قوية"
+    },
+    "TRX": {
+        "symbol": "TRX-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 30,
+        "note": "RSI 4H=28.3 ذروة بيع + قرب BB Lower"
+    },
+    "ZBCN": {
+        "symbol": "ZBCN-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 35,
+        "note": "مراقبة — RSI 4H=52 حالياً"
+    },
+    "BERA": {
+        "symbol": "BERA-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 35,
+        "note": "RSI 4H=46 — ارتفع +4.4% اليوم، ننتظر تصحيحاً"
+    },
+    "SEI": {
+        "symbol": "SEI-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 30,
+        "note": "RSI4H=21.5 + RSI1H=15.1 ذروة بيع شديدة جداً"
+    },
+    "AXS": {
+        "symbol": "AXS-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 32,
+        "note": "RSI4H=28.8 عند BB Lower — فرصة قوية"
+    },
+    "ALGO": {
+        "symbol": "ALGO-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 35,
+        "note": "SuperTrend 0.08528 — دعم قوي عند 0.08520"
+    },
 }
 # تتبع آخر تنبيه لكل عملة (لتجنب التكرار)
 last_alert = {}
