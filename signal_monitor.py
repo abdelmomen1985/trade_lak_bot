@@ -9,6 +9,7 @@ signal_monitor.py — مراقبة الصفقات المنشورة على قنا
 """
 
 import os, sys, json, time, logging, requests
+import numpy as np
 from datetime import datetime
 
 # ── المسارات ──────────────────────────────────────────────
@@ -208,6 +209,58 @@ REENTRY_BOUNCE = 0.015   # 1.5% ارتداد فوق SL = إشارة إعادة �
 # مهلة إعادة الدخول (ساعة واحدة من ضرب SL)
 REENTRY_WINDOW = 3600
 
+def calc_atr_for_symbol(symbol: str, period: int = 14) -> float:
+    """ATR 4H للعملة من OKX"""
+    try:
+        inst_id = symbol.replace("/", "-")
+        r = requests.get(
+            f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar=4H&limit={period+5}",
+            timeout=8
+        )
+        data = r.json()
+        if data.get("code") == "0" and data.get("data"):
+            candles = list(reversed(data["data"]))
+            trs = []
+            for i in range(1, len(candles)):
+                h = float(candles[i][2])
+                l = float(candles[i][3])
+                pc = float(candles[i-1][4])
+                trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+            if trs:
+                return float(np.mean(trs[-period:]))
+    except Exception:
+        pass
+    return 0.0
+
+def calc_support_for_symbol(symbol: str, period: int = 20) -> float:
+    """أدنى سعر في آخر period شمعة 4H كدعم حقيقي"""
+    try:
+        inst_id = symbol.replace("/", "-")
+        r = requests.get(
+            f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar=4H&limit={period}",
+            timeout=8
+        )
+        data = r.json()
+        if data.get("code") == "0" and data.get("data"):
+            return float(min(float(c[3]) for c in data["data"]))
+    except Exception:
+        pass
+    return 0.0
+
+def calc_sl_smart(symbol: str, entry: float, stored_sl: float) -> float:
+    """
+    SL ذكي: 1.5% تحت الدعم أو ATR كحد أدنى — أيهما أوسع
+    """
+    support = calc_support_for_symbol(symbol)
+    atr     = calc_atr_for_symbol(symbol)
+    if support > 0 and atr > 0:
+        sl_pct = support * 0.985
+        sl_atr = support - atr
+        new_sl = min(sl_pct, sl_atr)
+        log.info(f"[{symbol}] SL ذكي: support={support:.6g} ATR={atr:.6g} → SL={new_sl:.6g} (مخزن={stored_sl:.6g})")
+        return new_sl
+    return stored_sl
+
 def send_reentry_alert(symbol: str, sl_price: float, current_price: float, entry: float, tps: list):
     """إرسال تنبيه إعادة الدخول بعد Stop Hunt"""
     bounce_pct = (current_price - sl_price) / sl_price * 100
@@ -254,6 +307,9 @@ def check_signals():
 
             if not entry or not sl:
                 continue
+
+            # ── SL ثابت من التوصية المُرسلة — لا يُعاد حسابه ديناميكياً ──
+            # SL المحدد في التوصية هو المرجع الوحيد — لا يتغيّر بتغيّر السوق
 
             # جلب السعر الحالي
             current = get_current_price(symbol)

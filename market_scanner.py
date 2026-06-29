@@ -10,7 +10,7 @@ from datetime import datetime
 
 BASE_DIR = "/root/trade_lak_bot"
 sys.path.insert(0, BASE_DIR)
-from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_SIGNAL_CHAT
 
 # ── ملف قائمة المراقبة الديناميكية ─────────────────────────
 DYNAMIC_WATCHLIST_FILE = os.path.join(BASE_DIR, "data", "dynamic_watchlist.json")
@@ -34,9 +34,12 @@ log = logging.getLogger("market_scanner")
 # ── إعدادات المسح ─────────────────────────────────────────
 SCAN_INTERVAL     = 1800   # كل 30 دقيقة
 MIN_VOL_USDT      = 500_000  # حجم تداول 24H أدنى (USDT)
-MIN_SCORE_ALERT   = 5        # حد الإشعار الفوري
-MIN_SCORE_WATCH   = 4        # حد الإضافة لقائمة المراقبة
-ALERT_COOLDOWN    = 7200     # ساعتان بين تنبيهين لنفس العملة
+MIN_SCORE_ENTRY   = 7        # حد إرسال توصية الدخول على قناة Signal
+MIN_SCORE_WATCH   = 4        # حد الإضافة لقائمة المراقبة الداخلية (صامتة)
+ALERT_COOLDOWN    = 14400    # 4 ساعات بين توصيتين لنفس العملة
+VOL_SPIKE_RATIO   = 3.0      # 300% من المتوسط = حجم استثنائي (مؤقت حتى انتهاء التجربة)
+VOL_SPIKE_COOLDOWN = 7200   # 2 ساعة بين تنبيهي حجم لنفس العملة
+VOL_SPIKE_STATE_FILE = os.path.join(BASE_DIR, "data", "vol_spike_state.json")
 
 # عملات مستثناة (stablecoins + wrapped + meme منخفض السيولة)
 EXCLUDED = {
@@ -46,11 +49,12 @@ EXCLUDED = {
 }
 
 # ── دوال مساعدة ───────────────────────────────────────────
-def send_telegram(msg: str) -> bool:
+def send_telegram(msg: str, chat_id: str = None) -> bool:
+    target = chat_id or TELEGRAM_CHAT_ID
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": target,
             "text": msg,
             "parse_mode": "HTML"
         }, timeout=15)
@@ -58,6 +62,85 @@ def send_telegram(msg: str) -> bool:
     except Exception as e:
         log.error(f"خطأ Telegram: {e}")
         return False
+
+def send_signal_entry(op: dict):
+    """إرسال توصية دخول على قناة Trade Lak Signal"""
+    base    = op["base"]
+    price   = op["price"]
+    entry   = price
+    atr_4h  = op.get("atr_4h", entry * 0.02)
+    support = op.get("support", entry * 0.97)
+
+    # ── حساب SL: 1.5% تحت الدعم الحقيقي أو ATR كحد أدنى ──
+    sl_pct_based = support * 0.985          # 1.5% تحت الدعم
+    sl_atr_based = support - atr_4h         # ATR تحت الدعم
+    sl = round(min(sl_pct_based, sl_atr_based), 8)  # الأوسع (الأبعد) هو الأكثر أماناً
+
+    # ── التحقق من نسبة R/R ≥ 1.5:1 ──
+    tp1 = round(entry * 1.03, 8)
+    tp2 = round(entry * 1.05, 8)
+    tp3 = round(entry * 1.08, 8)
+    risk   = entry - sl
+    reward = tp1 - entry
+    rr     = reward / risk if risk > 0 else 0
+    if rr < 1.5:
+        log.info(f"[{base}] إشارة مُلغاة — R/R={rr:.2f} أقل من 1.5:1 (SL واسع جداً)")
+        return False
+
+    sl_pct = (sl - entry) / entry * 100  # سالب
+
+    def fp(v):
+        if v < 0.001: return f"{v:.8f}".rstrip('0')
+        if v < 1:    return f"{v:.6f}".rstrip('0')
+        if v < 1000: return f"{v:.4f}"
+        return f"{v:,.2f}"
+
+    reasons_text = "\n".join(f"  • {r}" for r in op["reasons"])
+    vol_str = f"{op['vol_usdt']/1_000_000:.1f}M" if op['vol_usdt'] >= 1_000_000 else f"{op['vol_usdt']/1_000:.0f}K"
+
+    sep = '─' * 30
+    msg = (
+        f"🟢 <b>إشارة دخول — {base}/USDT</b>\n"
+        f"{sep}\n"
+        f"💰 سعر الدخول: <b>${fp(entry)}</b>\n"
+        f"🎯 الهدف الأول: <b>${fp(tp1)}</b> (+3%)\n"
+        f"🎯 الهدف الثاني: <b>${fp(tp2)}</b> (+5%)\n"
+        f"🎯 الهدف الثالث: <b>${fp(tp3)}</b> (+8%)\n"
+        f"🛑 وقف الخسارة: <b>${fp(sl)}</b> ({sl_pct:.1f}%)\n"
+        f"{sep}\n"
+        f"📊 RSI 4H: <b>{op['rsi_4h']:.1f}</b>  |  RSI 1H: <b>{op['rsi_1h']:.1f}</b>\n"
+        f"💧 حجم 24H: <b>{vol_str} USDT</b>\n"
+        f"📈 Score: <b>{op['score']}/10</b>\n"
+        f"{sep}\n"
+        f"{reasons_text}\n"
+        f"{sep}\n"
+        f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+    )
+    sent = send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
+    if sent:
+        # ── حفظ الإشارة في signal_channel_active.json لمراقبتها ──
+        try:
+            sig_file = os.path.join(BASE_DIR, "data", "signal_channel_active.json")
+            try:
+                with open(sig_file) as f:
+                    active = json.load(f)
+            except Exception:
+                active = {}
+            active[f"{base}/USDT"] = {
+                "entry":    entry,
+                "tp1":      tp1,
+                "tp2":      tp2,
+                "tp3":      tp3,
+                "sl":       sl,
+                "sector":   "Scanner",
+                "sent_at":  int(time.time()),
+            }
+            with open(sig_file, "w") as f:
+                json.dump(active, f, ensure_ascii=False, indent=2)
+            log.info(f"[{base}] ✅ تم حفظ الإشارة في signal_channel_active.json")
+        except Exception as e:
+            log.error(f"[{base}] خطأ في حفظ الإشارة: {e}")
+    return sent
 
 def get_all_spot_symbols() -> list:
     """جلب جميع أزواج USDT من OKX Spot"""
@@ -93,7 +176,25 @@ def get_all_spot_symbols() -> list:
         log.error(f"خطأ في جلب الرموز: {e}")
     return []
 
-def get_ohlcv(inst_id: str, bar: str = "4H", limit: int = 50) -> list:
+def get_ohlcv_full(inst_id: str, bar: str, limit: int = 50):
+    """جلب OHLCV كاملاً (closes, highs, lows)"""
+    try:
+        r = requests.get(
+            f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}",
+            timeout=10
+        )
+        data = r.json()
+        if data.get("code") == "0" and data.get("data"):
+            candles = list(reversed(data["data"]))
+            closes = [float(c[4]) for c in candles]
+            highs  = [float(c[2]) for c in candles]
+            lows   = [float(c[3]) for c in candles]
+            return closes, highs, lows
+    except Exception:
+        pass
+    return [], [], []
+
+def get_ohlcv(inst_id: str, bar: str, limit: int = 50) -> list:
     try:
         r = requests.get(
             f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}",
@@ -130,6 +231,25 @@ def calc_bb(closes, period=20):
     std = np.std(arr)
     return mid - 2 * std, mid, mid + 2 * std
 
+def calc_atr(highs, lows, closes, period=14) -> float:
+    """Average True Range — يقيس التقلب الفعلي للعملة"""
+    if len(closes) < period + 1:
+        return closes[-1] * 0.02 if closes else 0
+    trs = []
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        trs.append(tr)
+    atr = np.mean(trs[-period:])
+    return float(atr)
+
+def calc_support(lows, period=20) -> float:
+    """أدنى نقطة في آخر period شمعة كدعم حقيقي"""
+    return float(min(lows[-period:])) if len(lows) >= period else float(min(lows))
+
 def calc_macd_hist(closes, fast=12, slow=26, signal=9) -> float:
     if len(closes) < slow + signal:
         return 0.0
@@ -149,17 +269,16 @@ def score_coin(sym_info: dict) -> dict | None:
     inst_id = sym_info["instId"]
     price   = sym_info["price"]
     change  = sym_info["change_pct"]
-
-    closes_4h = get_ohlcv(inst_id, "4H", 50)
+    closes_4h, highs_4h, lows_4h = get_ohlcv_full(inst_id, "4H", 50)
     closes_1h = get_ohlcv(inst_id, "1H", 50)
-
     if len(closes_4h) < 25 or len(closes_1h) < 15:
         return None
-
     rsi_4h     = calc_rsi(closes_4h)
     rsi_1h     = calc_rsi(closes_1h)
     bb_l, bb_m, bb_u = calc_bb(closes_4h)
     macd_hist  = calc_macd_hist(closes_4h)
+    atr_4h     = calc_atr(highs_4h, lows_4h, closes_4h)
+    support    = calc_support(lows_4h)
 
     score   = 0
     reasons = []
@@ -222,6 +341,8 @@ def score_coin(sym_info: dict) -> dict | None:
         "score":     score,
         "reasons":   reasons,
         "vol_usdt":  sym_info["vol_usdt"],
+        "atr_4h":    atr_4h,
+        "support":   support,
     }
 
 def load_state() -> dict:
@@ -261,6 +382,119 @@ def fmt_vol(vol: float) -> str:
         return f"{vol/1_000_000:.1f}M"
     return f"{vol/1_000:.0f}K"
 
+def load_vol_spike_state() -> dict:
+    if os.path.exists(VOL_SPIKE_STATE_FILE):
+        try:
+            with open(VOL_SPIKE_STATE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_vol_spike_state(state: dict):
+    with open(VOL_SPIKE_STATE_FILE, "w") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+def check_volume_spike(sym_info: dict) -> dict | None:
+    """يفحص إذا كان حجم الشمعة الحالية أكثر من VOL_SPIKE_RATIO x المتوسط"""
+    inst_id = sym_info["instId"]
+    base    = inst_id.replace("-USDT", "")
+    try:
+        r = requests.get(
+            f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar=1H&limit=50",
+            timeout=10
+        )
+        data = r.json()
+        if data.get("code") != "0" or not data.get("data"):
+            return None
+        candles = list(reversed(data["data"]))
+        if len(candles) < 25:
+            return None
+        # الشمعة الأخيرة (الحالية)
+        last = candles[-1]
+        last_vol = float(last[6]) if len(last) > 6 and last[6] else float(last[5]) * float(last[4])
+        # متوسط حجم آخر 24 شمعة (بدون الأخيرة)
+        prev_vols = []
+        for c in candles[-25:-1]:
+            v = float(c[6]) if len(c) > 6 and c[6] else float(c[5]) * float(c[4])
+            prev_vols.append(v)
+        if not prev_vols:
+            return None
+        avg_vol = sum(prev_vols) / len(prev_vols)
+        if avg_vol < 500:  # تجاهل العملات ذات الحجم الضئيل جداً
+            return None
+        ratio = last_vol / avg_vol if avg_vol > 0 else 0
+        if ratio < VOL_SPIKE_RATIO:
+            return None
+        open_price  = float(last[1])
+        close_price = float(last[4])
+        price_change = ((close_price - open_price) / open_price) * 100 if open_price > 0 else 0
+        # ── فقط الحجم الإيجابي (ارتفاع السعر) يدل على انفجار صعودي ──
+        if price_change <= 0:
+            return None
+        return {
+            "inst_id":      inst_id,
+            "base":         base,
+            "price":        close_price,
+            "vol_usdt":     last_vol,
+            "avg_vol":      avg_vol,
+            "ratio":        ratio,
+            "price_change": price_change,
+        }
+    except Exception as e:
+        log.debug(f"خطأ في فحص حجم {inst_id}: {e}")
+        return None
+
+def send_volume_spike_alert(spike: dict) -> bool:
+    """إرسال تنبيه الحجم الاستثنائي على قناة Signal"""
+    SEP = "\u2500" * 30
+    ratio_pct = spike["ratio"] * 100
+    direction = "\U0001f4c8" if spike["price_change"] > 0 else "\U0001f4c9"
+
+    def fp(v):
+        if v == 0: return "0"
+        if v < 0.001: return f"{v:.8f}".rstrip('0')
+        if v < 1:    return f"{v:.6f}".rstrip('0')
+        if v < 1000: return f"{v:.4f}"
+        return f"{v:,.2f}"
+
+    msg = (
+        f"\u26a1 <b>\u062d\u062c\u0645 \u0627\u0633\u062a\u062b\u0646\u0627\u0626\u064a \u2014 {spike['base']}/USDT</b>\n"
+        f"{SEP}\n"
+        f"\U0001f4b0 \u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u062d\u0627\u0644\u064a: <b>${fp(spike['price'])}</b>\n"
+        f"{direction} \u0627\u0644\u062a\u063a\u064a\u0631 \u0641\u064a \u0627\u0644\u0634\u0645\u0639\u0629: <b>{spike['price_change']:+.2f}%</b>\n"
+        f"\U0001f4a7 \u062d\u062c\u0645 \u0627\u0644\u0634\u0645\u0639\u0629: <b>${spike['vol_usdt']:,.0f}</b>\n"
+        f"\U0001f4ca \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062d\u062c\u0645 \u0627\u0644\u0639\u0627\u062f\u064a: <b>${spike['avg_vol']:,.0f}</b>\n"
+        f"\U0001f525 \u0646\u0633\u0628\u0629 \u0627\u0644\u062d\u062c\u0645: <b>{ratio_pct:.0f}%</b> \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0633\u0637\n"
+        f"{SEP}\n"
+        f"\u26a0\ufe0f \u0642\u062f \u064a\u0634\u064a\u0631 \u0625\u0644\u0649 \u062e\u0628\u0631 \u0623\u0648 \u062a\u062f\u062e\u0644 \u0645\u0641\u0627\u062c\u0626 \u2014 \u0631\u0627\u0642\u0628 \u0627\u0644\u062d\u0631\u0643\u0629\n"
+        f"\U0001f550 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+    )
+    return send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
+
+def run_volume_spike_scan(symbols: list):
+    """مسح الحجم الاستثنائي لجميع العملات"""
+    spike_state = load_vol_spike_state()
+    now = time.time()
+    spikes_found = 0
+    for sym in symbols:
+        try:
+            spike = check_volume_spike(sym)
+            if spike:
+                base = spike["base"]
+                last_spike_time = spike_state.get(base, 0)
+                if (now - last_spike_time) > VOL_SPIKE_COOLDOWN:
+                    if send_volume_spike_alert(spike):
+                        spike_state[base] = now
+                        spikes_found += 1
+                        log.info(f"[{base}] حجم استثنائي: {spike['ratio']:.1f}x ({spike['price_change']:+.1f}%)")
+            time.sleep(0.1)
+        except Exception as e:
+            log.debug(f"خطأ في فحص حجم {sym.get('instId','?')}: {e}")
+    save_vol_spike_state(spike_state)
+    if spikes_found:
+        log.info(f"تنبيهات حجم استثنائي أُرسلت: {spikes_found}")
+
 def run_scan():
     log.info("=" * 50)
     log.info(f"🔍 بدء مسح السوق — {datetime.now().strftime('%Y/%m/%d %H:%M')}")
@@ -273,6 +507,9 @@ def run_scan():
     # 1. جلب جميع العملات
     symbols = get_all_spot_symbols()
     log.info(f"📊 تم جلب {len(symbols)} عملة للمسح")
+    # ── مسح الحجم الاستثنائي (Volume Spike) ──────────────────
+    log.info("⚡ فحص الحجم الاستثنائي...")
+    run_volume_spike_scan(symbols)
 
     opportunities = []
     scanned = 0
@@ -319,29 +556,14 @@ def run_scan():
             dyn_wl[base]["rsi_4h"]  = round(op["rsi_4h"], 1)
             dyn_wl[base]["price"]   = op["price"]
 
-        # إرسال تنبيه للفرص القوية فقط
-        if score >= MIN_SCORE_ALERT:
+        # ── إرسال توصية دخول على قناة Signal فقط عند score ≥ 7 ──
+        if score >= MIN_SCORE_ENTRY:
             cooldown_ok = (now - last_alerts.get(base, 0)) > ALERT_COOLDOWN
             if cooldown_ok:
-                emoji = "🔥" if score >= 7 else ("🟢" if score >= 6 else "🟡")
-                reasons_text = "\n".join(f"  • {r}" for r in op["reasons"])
-                vol_str = fmt_vol(op["vol_usdt"])
-                msg = (
-                    f"{emoji} <b>فرصة دخول — {base}/USDT</b>\n"
-                    f"{'─' * 30}\n"
-                    f"💰 السعر: <b>${op['price']:,.6g}</b> ({op['change']:+.1f}%)\n"
-                    f"📊 Score: <b>{score}/10</b>\n"
-                    f"📈 RSI 4H: <b>{op['rsi_4h']:.1f}</b>  |  RSI 1H: <b>{op['rsi_1h']:.1f}</b>\n"
-                    f"💧 حجم 24H: <b>{vol_str} USDT</b>\n"
-                    f"{'─' * 30}\n"
-                    f"{reasons_text}\n"
-                    f"{'─' * 30}\n"
-                    f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
-                )
-                if send_telegram(msg):
+                if send_signal_entry(op):
                     last_alerts[base] = now
                     alerts_sent += 1
-                    log.info(f"📢 تنبيه أُرسل: {base} (score={score})")
+                    log.info(f"🟢 توصية دخول أُرسلت: {base} (score={score})")
 
     # 3. تنظيف العملات القديمة من القائمة الديناميكية (أكثر من 48 ساعة بدون تحديث)
     to_remove = []
