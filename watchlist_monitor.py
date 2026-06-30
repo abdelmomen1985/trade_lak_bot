@@ -97,6 +97,24 @@ WATCHLIST = {
         "rsi4h_entry": 35,
         "note": "SuperTrend 0.08528 — دعم قوي عند 0.08520"
     },
+    "SUSHI": {
+        "symbol": "SUSHI-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 48,
+        "note": "RSI 4H=48.6 محايد — ننتظر تصحيحاً لـ 0.148-0.150 مع R/R ≥ 1.5"
+    },
+    "PI": {
+        "symbol": "PI-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 35,
+        "note": "RSI 4H=31.9 قريب من ذروة البيع — ننتظر تأكيد حجم وارتداد"
+    },
+    "PYTH": {
+        "symbol": "PYTH-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 55,
+        "note": "RSI 4H=69 قرب ذروة شراء — ننتظر تصحيحاً لـ RSI < 55 مع دعم 0.034-0.035"
+    },
 }
 # تتبع آخر تنبيه لكل عملة (لتجنب التكرار)
 last_alert = {}

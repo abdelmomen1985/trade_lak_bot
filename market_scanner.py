@@ -10,7 +10,7 @@ from datetime import datetime
 
 BASE_DIR = "/root/trade_lak_bot"
 sys.path.insert(0, BASE_DIR)
-from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_SIGNAL_CHAT
+from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_SIGNAL_CHAT, TELEGRAM_LIQUIDITY_CHAT
 
 # ── ملف قائمة المراقبة الديناميكية ─────────────────────────
 DYNAMIC_WATCHLIST_FILE = os.path.join(BASE_DIR, "data", "dynamic_watchlist.json")
@@ -95,26 +95,36 @@ def send_signal_entry(op: dict):
         if v < 1000: return f"{v:.4f}"
         return f"{v:,.2f}"
 
-    reasons_text = "\n".join(f"  • {r}" for r in op["reasons"])
+    reasons_text = "  •  ".join(op["reasons"])
     vol_str = f"{op['vol_usdt']/1_000_000:.1f}M" if op['vol_usdt'] >= 1_000_000 else f"{op['vol_usdt']/1_000:.0f}K"
+    stars = '\u2b50' * min(op['score'] // 2, 5)
+    rr_display = f"{rr:.1f}:1"
 
-    sep = '─' * 30
     msg = (
-        f"🟢 <b>إشارة دخول — {base}/USDT</b>\n"
-        f"{sep}\n"
-        f"💰 سعر الدخول: <b>${fp(entry)}</b>\n"
-        f"🎯 الهدف الأول: <b>${fp(tp1)}</b> (+3%)\n"
-        f"🎯 الهدف الثاني: <b>${fp(tp2)}</b> (+5%)\n"
-        f"🎯 الهدف الثالث: <b>${fp(tp3)}</b> (+8%)\n"
-        f"🛑 وقف الخسارة: <b>${fp(sl)}</b> ({sl_pct:.1f}%)\n"
-        f"{sep}\n"
-        f"📊 RSI 4H: <b>{op['rsi_4h']:.1f}</b>  |  RSI 1H: <b>{op['rsi_1h']:.1f}</b>\n"
-        f"💧 حجم 24H: <b>{vol_str} USDT</b>\n"
-        f"📈 Score: <b>{op['score']}/10</b>\n"
-        f"{sep}\n"
-        f"{reasons_text}\n"
-        f"{sep}\n"
-        f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+        f"📡 <b>إشارة دخول | {base}/USDT</b>\n"
+        f"──────────────────────────────\n"
+        f"\n"
+        f"💰 <b>السعر الحالي:</b>  {fp(entry)}\n"
+        f"\n"
+        f"📥 <b>نقطة الدخول:</b>  {fp(entry)}\n"
+        f"\n"
+        f"🖇 <b>الهدف الأول:</b>   {fp(tp1)} <b>(+3.0%)</b>\n"
+        f"🖇 <b>الهدف الثاني:</b>  {fp(tp2)} <b>(+5.0%)</b>\n"
+        f"🖇 <b>الهدف الثالث:</b>  {fp(tp3)} <b>(+8.0%)</b>\n"
+        f"\n"
+        f"🔴 <b>وقف الخسارة:</b>  {fp(sl)} <b>({sl_pct:.1f}%)</b>\n"
+        f"⚖️ <b>نسبة المخاطرة:</b>  {rr_display}\n"
+        f"\n"
+        f"──────────────────────────────\n"
+        f"{stars} <b>قوة الإشارة ({op['score']}/10)</b>\n"
+        f"\n"
+        f"📊 RSI 4H: <b>{op['rsi_4h']:.0f}</b>  |  RSI 1H: <b>{op['rsi_1h']:.0f}</b>  |  حجم: <b>{vol_str}</b>\n"
+        f"\n"
+        f"──────────────────────────────\n"
+        f"⚠️ هذه الإشارة لأهداف تعليمية\n"
+        f"وليست نصيحة استثمارية بالبيع أو الشراء\n"
+        f"──────────────────────────────\n"
+        f"🕐 {datetime.now().strftime('%H:%M  |  %Y/%m/%d')}"
     )
     sent = send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
     if sent:
@@ -470,7 +480,7 @@ def send_volume_spike_alert(spike: dict) -> bool:
         f"\u26a0\ufe0f \u0642\u062f \u064a\u0634\u064a\u0631 \u0625\u0644\u0649 \u062e\u0628\u0631 \u0623\u0648 \u062a\u062f\u062e\u0644 \u0645\u0641\u0627\u062c\u0626 \u2014 \u0631\u0627\u0642\u0628 \u0627\u0644\u062d\u0631\u0643\u0629\n"
         f"\U0001f550 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
     )
-    return send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
+    return send_telegram(msg, chat_id=TELEGRAM_LIQUIDITY_CHAT)
 
 def run_volume_spike_scan(symbols: list):
     """مسح الحجم الاستثنائي لجميع العملات"""
@@ -509,7 +519,7 @@ def run_scan():
     log.info(f"📊 تم جلب {len(symbols)} عملة للمسح")
     # ── مسح الحجم الاستثنائي (Volume Spike) ──────────────────
     log.info("⚡ فحص الحجم الاستثنائي...")
-    run_volume_spike_scan(symbols)
+    # run_volume_spike_scan(symbols)  # موقوف مؤقتاً
 
     opportunities = []
     scanned = 0
