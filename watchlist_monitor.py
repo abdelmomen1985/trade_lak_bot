@@ -3,7 +3,7 @@
 Watchlist Monitor — يراقب عملات محددة ويُرسل تنبيهاً عند توفر فرصة دخول قوية
 العملات: XRP, INJ, WLD, ARB, PARTI
 """
-import sys, time, requests, numpy as np, logging
+import sys, time, requests, numpy as np, logging, json, os
 sys.path.insert(0, '/root/trade_lak_bot')
 from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PRIVATE_CHAT
 
@@ -16,6 +16,21 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger(__name__)
+
+# مسار ملف الإشارات النشطة (market_scanner)
+SIGNAL_ACTIVE_FILE = '/root/trade_lak_bot/data/signal_channel_active.json'
+
+def get_active_signal_symbols():
+    """جلب قائمة العملات التي لها إشارات مفتوحة في قناة Signal"""
+    try:
+        if os.path.exists(SIGNAL_ACTIVE_FILE):
+            with open(SIGNAL_ACTIVE_FILE) as f:
+                active = json.load(f)
+            # استخراج الرموز بدون /USDT
+            return set(k.replace('/USDT', '').upper() for k in active.keys())
+    except Exception as e:
+        log.error(f'خطأ في قراءة signal_channel_active: {e}')
+    return set()
 
 # العملات المراقبة مع شروط الدخول الخاصة بكل منها
 WATCHLIST = {
@@ -60,12 +75,6 @@ WATCHLIST = {
         "min_score": 6,
         "rsi4h_entry": 28,
         "note": "RSI 4H=24.4 ذروة بيع شديدة — فرصة قوية"
-    },
-    "TRX": {
-        "symbol": "TRX-USDT",
-        "min_score": 6,
-        "rsi4h_entry": 30,
-        "note": "RSI 4H=28.3 ذروة بيع + قرب BB Lower"
     },
     "ZBCN": {
         "symbol": "ZBCN-USDT",
@@ -320,6 +329,12 @@ def check_and_alert(result):
     if score < min_score:
         return False
 
+    # ── فحص إذا كانت العملة لها إشارة مفتوحة في قناة Signal ──
+    active_signals = get_active_signal_symbols()
+    if name in active_signals:
+        log.info(f'⏭️ تخطي {name} — لها إشارة مفتوحة في Signal (لا تكرار)')
+        return False
+
     # تحقق من Cooldown
     now = time.time()
     if name in last_alert and (now - last_alert[name]) < ALERT_COOLDOWN:
@@ -362,7 +377,8 @@ def main():
         f'العملات المراقبة:\n'
         + '\n'.join([f'• {k} — {v["note"]}' for k, v in WATCHLIST.items()])
         + '\n━━━━━━━━━━━━━━━━━━\n'
-        'سيُرسل تنبيه فوري عند Score ≥ 6'
+        'سيُرسل تنبيه فوري عند Score ≥ 6\n'
+        '⚠️ لن يُرسل تنبيه إذا كانت العملة لها إشارة مفتوحة في Signal'
     )
 
     CHECK_INTERVAL = 300  # كل 5 دقائق
@@ -371,6 +387,11 @@ def main():
         try:
             log.info(f'--- فحص دوري ({len(WATCHLIST)} عملة) ---')
             alerts_sent = 0
+
+            # جلب الإشارات المفتوحة مرة واحدة لكل دورة
+            active_signals = get_active_signal_symbols()
+            if active_signals:
+                log.info(f'⚠️ إشارات مفتوحة في Signal (مُستثناة): {", ".join(sorted(active_signals))}')
 
             for name, config in WATCHLIST.items():
                 try:

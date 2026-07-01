@@ -152,6 +152,63 @@ def send_signal_entry(op: dict):
             log.error(f"[{base}] خطأ في حفظ الإشارة: {e}")
     return sent
 
+def send_reinforce_advice(op: dict, existing: dict) -> bool:
+    """إرسال نصيحة تعزيز أو توسيع SL لإشارة مفتوحة قوية"""
+    base   = op["base"]
+    price  = op["price"]
+    entry  = existing.get("entry", price)
+    sl_old = existing.get("sl", price * 0.97)
+    tp1    = existing.get("tp1", price * 1.03)
+    tp2    = existing.get("tp2", price * 1.05)
+    tp3    = existing.get("tp3", price * 1.08)
+    pnl    = (price - entry) / entry * 100
+
+    def fp(v):
+        if v < 0.001: return f"{v:.8f}".rstrip('0')
+        if v < 1:    return f"{v:.6f}".rstrip('0')
+        if v < 1000: return f"{v:.4f}"
+        return f"{v:,.2f}"
+
+    stars = '\u2b50' * min(op['score'] // 2, 5)
+    pnl_icon = "📈" if pnl >= 0 else "📉"
+    vol_str = f"{op['vol_usdt']/1_000_000:.1f}M" if op['vol_usdt'] >= 1_000_000 else f"{op['vol_usdt']/1_000:.0f}K"
+
+    # اقتراح توسيع SL الجديد: 1% تحت السعر الحالي
+    sl_new = round(price * 0.985, 8)
+    sl_new_pct = (sl_new - entry) / entry * 100
+
+    msg = (
+        f"💪 <b>نصيحة تعزيز | {base}/USDT</b>\n"
+        f"──────────────────────────────\n"
+        f"\n"
+        f"📌 <b>الإشارة مفتوحة ولا تزال قوية</b>\n"
+        f"\n"
+        f"💰 <b>سعر الدخول:</b>  {fp(entry)}\n"
+        f"{pnl_icon} <b>السعر الحالي:</b>  {fp(price)} <b>({pnl:+.1f}%)</b>\n"
+        f"\n"
+        f"🖇 <b>الهدف الأول:</b>   {fp(tp1)}\n"
+        f"🖇 <b>الهدف الثاني:</b>  {fp(tp2)}\n"
+        f"🖇 <b>الهدف الثالث:</b>  {fp(tp3)}\n"
+        f"\n"
+        f"🔴 <b>وقف الخسارة الحالي:</b>  {fp(sl_old)}\n"
+        f"🔰 <b>وقف الخسارة المقترح:</b>  {fp(sl_new)} <b>({sl_new_pct:+.1f}%)</b>\n"
+        f"\n"
+        f"──────────────────────────────\n"
+        f"{stars} <b>قوة الإشارة ({op['score']}/10)</b>\n"
+        f"\n"
+        f"📊 RSI 4H: <b>{op['rsi_4h']:.0f}</b>  |  RSI 1H: <b>{op['rsi_1h']:.0f}</b>  |  حجم: <b>{vol_str}</b>\n"
+        f"\n"
+        f"──────────────────────────────\n"
+        f"💡 يمكنك تعزيز المركز أو توسيع وقف الخسارة\n"
+        f"للحفاظ على الصفقة مع استمرار الزخم\n"
+        f"──────────────────────────────\n"
+        f"⚠️ هذه الإشارة لأهداف تعليمية\n"
+        f"وليست نصيحة استثمارية بالبيع أو الشراء\n"
+        f"──────────────────────────────\n"
+        f"🕐 {datetime.now().strftime('%H:%M  |  %Y/%m/%d')}"
+    )
+    return send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
+
 def get_all_spot_symbols() -> list:
     """جلب جميع أزواج USDT من OKX Spot"""
     try:
@@ -483,11 +540,38 @@ def send_volume_spike_alert(spike: dict) -> bool:
     return send_telegram(msg, chat_id=TELEGRAM_LIQUIDITY_CHAT)
 
 def run_volume_spike_scan(symbols: list):
-    """مسح الحجم الاستثنائي لجميع العملات"""
+    """مسح الحجم الاستثنائي — فقط للعملات ذات إشارات نشطة في Signal"""
+    # ── جلب العملات ذات الإشارات النشطة فقط ──
+    sig_file = os.path.join(BASE_DIR, "data", "signal_channel_active.json")
+    try:
+        with open(sig_file) as f:
+            active_signals = json.load(f)
+    except Exception:
+        active_signals = {}
+
+    if not active_signals:
+        log.info("⚡ لا توجد إشارات نشطة — تخطي فحص الحجم الاستثنائي")
+        return
+
+    # استخراج أسماء العملات النشطة
+    active_bases = set()
+    for key in active_signals.keys():
+        base = key.replace("-USDT", "").replace("/USDT", "").upper()
+        active_bases.add(base)
+
+    log.info(f"⚡ فحص حجم استثنائي لـ {len(active_bases)} عملة نشطة: {', '.join(active_bases)}")
+
+    # تصفية symbols لتشمل فقط العملات النشطة
+    filtered_symbols = [s for s in symbols if s.get("instId", "").replace("-USDT", "").upper() in active_bases]
+
+    if not filtered_symbols:
+        log.info("⚡ لا توجد عملات نشطة ضمن قائمة المسح")
+        return
+
     spike_state = load_vol_spike_state()
     now = time.time()
     spikes_found = 0
-    for sym in symbols:
+    for sym in filtered_symbols:
         try:
             spike = check_volume_spike(sym)
             if spike:
@@ -519,7 +603,7 @@ def run_scan():
     log.info(f"📊 تم جلب {len(symbols)} عملة للمسح")
     # ── مسح الحجم الاستثنائي (Volume Spike) ──────────────────
     log.info("⚡ فحص الحجم الاستثنائي...")
-    # run_volume_spike_scan(symbols)  # موقوف مؤقتاً
+    run_volume_spike_scan(symbols)  # فقط للعملات ذات إشارات مفتوحة في Signal
 
     opportunities = []
     scanned = 0
@@ -570,10 +654,29 @@ def run_scan():
         if score >= MIN_SCORE_ENTRY:
             cooldown_ok = (now - last_alerts.get(base, 0)) > ALERT_COOLDOWN
             if cooldown_ok:
-                if send_signal_entry(op):
-                    last_alerts[base] = now
-                    alerts_sent += 1
-                    log.info(f"🟢 توصية دخول أُرسلت: {base} (score={score})")
+                # ── فحص إذا كانت العملة لها إشارة مفتوحة ──
+                try:
+                    sig_file = os.path.join(BASE_DIR, "data", "signal_channel_active.json")
+                    with open(sig_file) as _sf:
+                        _active = json.load(_sf)
+                except Exception:
+                    _active = {}
+                sym_key = f"{base}/USDT"
+                if sym_key in _active:
+                    # العملة لها إشارة مفتوحة — أرسل نصيحة تعزيز فقط إذا كان score ≥ 9
+                    if score >= 9:
+                        if send_reinforce_advice(op, _active[sym_key]):
+                            last_alerts[base] = now
+                            alerts_sent += 1
+                            log.info(f"💪 نصيحة تعزيز أُرسلت: {base} (score={score})")
+                    else:
+                        log.info(f"⏭️ تخطي {base} — إشارة مفتوحة بالفعل (score={score})")
+                else:
+                    # لا توجد إشارة مفتوحة — أرسل إشارة دخول جديدة
+                    if send_signal_entry(op):
+                        last_alerts[base] = now
+                        alerts_sent += 1
+                        log.info(f"🟢 توصية دخول أُرسلت: {base} (score={score})")
 
     # 3. تنظيف العملات القديمة من القائمة الديناميكية (أكثر من 48 ساعة بدون تحديث)
     to_remove = []

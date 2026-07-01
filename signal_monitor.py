@@ -119,6 +119,18 @@ def load_signals() -> dict:
         log.error(f"خطأ في تحميل الإشارات: {e}")
     return {}
 
+def remove_signal(symbol: str):
+    """حذف إشارة من signal_channel_active.json عند إغلاقها (TP3 أو SL نهائي)"""
+    try:
+        signals = load_signals()
+        if symbol in signals:
+            del signals[symbol]
+            with open(SIGNALS_FILE, "w", encoding="utf-8") as f:
+                json.dump(signals, f, ensure_ascii=False, indent=2)
+            log.info(f"🗑️ [{symbol}] حُذفت من signal_channel_active.json")
+    except Exception as e:
+        log.error(f"خطأ في حذف إشارة {symbol}: {e}")
+
 def load_state() -> dict:
     """تحميل حالة المراقبة (الأهداف المحققة، SL المضروبة)"""
     try:
@@ -179,22 +191,26 @@ def send_tp_hit(symbol: str, tp_num: int, tp_price: float,
         return True
     return False
 
-def send_sl_hit(symbol: str, sl_price: float, current_price: float, entry: float):
+def send_sl_hit(symbol: str, sl_price: float, current_price: float, entry: float, entry_time: float = 0):
     """إرسال إشعار ضرب وقف الخسارة"""
     coin = symbol.replace("/USDT", "").replace("-USDT", "")
     loss = ((current_price - entry) / entry) * 100
+    duration_h = (time.time() - entry_time) / 3600 if entry_time else 0
+    duration_str = f"{duration_h:.1f} ساعة" if entry_time else "—"
 
     msg = (
-        f"🛑 <b>وقف الخسارة مُفعَّل!</b>\n"
+        f"❌ <b>صفقة خاسرة — ضُرب وقف الخسارة</b>\n"
         f"{'─' * 32}\n"
-        f"🪙 <b>{coin}/USDT</b>\n"
-        f"💰 السعر الحالي: <b>${fmt_price(current_price)}</b>\n"
-        f"📥 سعر الدخول: <b>${fmt_price(entry)}</b>\n"
-        f"🛑 وقف الخسارة: <b>${fmt_price(sl_price)}</b>\n"
-        f"📉 الخسارة: <b>{loss:.2f}%</b>\n"
+        f"\n"
+        f"💎 <b>{coin}/USDT</b>\n"
         f"{'─' * 32}\n"
-        f"⚠️ <b>تم إغلاق الإشارة — الصفقة انتهت</b>\n"
-        f"🕐 {now_str()}"
+        f"\n"
+        f"💰 دخول: <b>{fmt_price(entry)}</b>\n"
+        f"🛑 <b>SL:</b> {fmt_price(sl_price)} | خسارة: <b>{loss:.2f}%</b>\n"
+        f"⏱ مدة الصفقة: <b>{duration_str}</b>\n"
+        f"\n"
+        f"{'─' * 32}\n"
+        f"🕐 {datetime.now().strftime('%H:%M:%S')}  |  📅 {datetime.now().strftime('%Y-%m-%d')}"
     )
     if send_telegram(msg):
         log.info(f"🛑 SL ضُرب لـ {symbol} @ ${current_price:,.6g} ({loss:.2f}%)")
@@ -304,6 +320,7 @@ def check_signals():
             tp2   = float(sig.get("tp2", 0))
             tp3   = float(sig.get("tp3", 0))
             sl    = float(sig.get("sl", 0))
+            sent_at = float(sig.get("sent_at", 0))
 
             if not entry or not sl:
                 continue
@@ -329,15 +346,18 @@ def check_signals():
             # SL الفعلي = SL المحدد - 0.5% هامش إضافي لتجنب Stop Hunt
             sl_effective = sl * (1 - SL_WICK_BUFFER)
             if not sym_state.get("sl_hit") and current <= sl_effective:
-                if send_sl_hit(symbol, sl, current, entry):
+                if send_sl_hit(symbol, sl, current, entry, entry_time=sent_at):
                     sym_state["sl_hit"] = True
                     sym_state["sl_hit_time"] = time.time()
                     sym_state["sl_hit_price"] = current
                     sym_state["reentry_sent"] = False
                     state_changed = True
+                    # حذف الإشارة من القائمة النشطة فوراً عند ضرب SL
+                    remove_signal(symbol)
                 continue  # بعد SL لا نفحص الأهداف
 
             # ── فحص إعادة الدخول بعد Stop Hunt ──
+            # الإشارة محذوفة من signal_channel_active عند SL، لكن state لا يزال يتتبعها
             if sym_state.get("sl_hit") and not sym_state.get("reentry_sent"):
                 sl_hit_time  = sym_state.get("sl_hit_time", 0)
                 sl_hit_price = sym_state.get("sl_hit_price", sl)
@@ -376,6 +396,9 @@ def check_signals():
                 if send_tp_hit(symbol, 3, tp3, current, entry, []):
                     tp_hit.add(3)
                     state_changed = True
+                    # TP3 = اكتمال الصفقة — حذف الإشارة من القائمة النشطة
+                    remove_signal(symbol)
+                    log.info(f"✅ [{symbol}] اكتملت الصفقة (TP3) — حُذفت من القائمة النشطة")
 
             sym_state["tp_hit"] = list(tp_hit)
 
