@@ -119,6 +119,25 @@ def load_signals() -> dict:
         log.error(f"خطأ في تحميل الإشارات: {e}")
     return {}
 
+SL_HIT_MEMORY_FILE = os.path.join(BASE_DIR, "data", "sl_hit_memory.json")
+
+def record_sl_hit_memory(symbol: str, sl_price: float):
+    """تسجيل أن العملة ضربت SL — يستخدمه market_scanner للتنويه بإعادة الدخول"""
+    try:
+        memory = {}
+        if os.path.exists(SL_HIT_MEMORY_FILE):
+            with open(SL_HIT_MEMORY_FILE) as f:
+                memory = json.load(f)
+        # تنظيف الإدخالات القديمة (> 48 ساعة)
+        cutoff = time.time() - (48 * 3600)
+        memory = {k: v for k, v in memory.items() if v.get("time", 0) > cutoff}
+        memory[symbol] = {"time": time.time(), "sl_price": sl_price}
+        with open(SL_HIT_MEMORY_FILE, "w") as f:
+            json.dump(memory, f, ensure_ascii=False, indent=2)
+        log.info(f"📝 [{symbol}] سُجّل في sl_hit_memory.json (SL={sl_price:.6g})")
+    except Exception as e:
+        log.error(f"خطأ في تسجيل sl_memory لـ {symbol}: {e}")
+
 def remove_signal(symbol: str):
     """حذف إشارة من signal_channel_active.json عند إغلاقها (TP3 أو SL نهائي)"""
     try:
@@ -354,6 +373,8 @@ def check_signals():
                     state_changed = True
                     # حذف الإشارة من القائمة النشطة فوراً عند ضرب SL
                     remove_signal(symbol)
+                    # تسجيل في الذاكرة المشتركة ليعرف market_scanner بإعادة الدخول
+                    record_sl_hit_memory(symbol, sl)
                 continue  # بعد SL لا نفحص الأهداف
 
             # ── فحص إعادة الدخول بعد Stop Hunt ──

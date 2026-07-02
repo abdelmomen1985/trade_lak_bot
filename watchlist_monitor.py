@@ -5,7 +5,7 @@ Watchlist Monitor — يراقب عملات محددة ويُرسل تنبيها
 """
 import sys, time, requests, numpy as np, logging, json, os
 sys.path.insert(0, '/root/trade_lak_bot')
-from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PRIVATE_CHAT
+from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PRIVATE_CHAT, TELEGRAM_SIGNAL_CHAT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +18,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # مسار ملف الإشارات النشطة (market_scanner)
-SIGNAL_ACTIVE_FILE = '/root/trade_lak_bot/data/signal_channel_active.json'
+SIGNAL_ACTIVE_FILE  = '/root/trade_lak_bot/data/signal_channel_active.json'
+SL_HIT_MEMORY_FILE  = '/root/trade_lak_bot/data/sl_hit_memory.json'
+SL_HIT_MEMORY_HOURS = 48
 
 def get_active_signal_symbols():
     """جلب قائمة العملات التي لها إشارات مفتوحة في قناة Signal"""
@@ -31,6 +33,21 @@ def get_active_signal_symbols():
     except Exception as e:
         log.error(f'خطأ في قراءة signal_channel_active: {e}')
     return set()
+
+def get_reentry_info(symbol: str):
+    """فحص إذا كانت العملة ضربت SL مؤخراً (للتنويه بإعادة الدخول)"""
+    try:
+        if os.path.exists(SL_HIT_MEMORY_FILE):
+            import json as _json
+            with open(SL_HIT_MEMORY_FILE) as f:
+                memory = _json.load(f)
+            key = f"{symbol}/USDT"
+            if key in memory:
+                hours = (time.time() - memory[key].get("time", 0)) / 3600
+                return {"hours_since": hours}
+    except Exception:
+        pass
+    return None
 
 # العملات المراقبة مع شروط الدخول الخاصة بكل منها
 WATCHLIST = {
@@ -90,51 +107,65 @@ WATCHLIST = {
     },
     "SEI": {
         "symbol": "SEI-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 30,
         "note": "RSI4H=21.5 + RSI1H=15.1 ذروة بيع شديدة جداً"
     },
     "AXS": {
         "symbol": "AXS-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 32,
         "note": "RSI4H=28.8 عند BB Lower — فرصة قوية"
     },
     "ALGO": {
         "symbol": "ALGO-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 35,
         "note": "SuperTrend 0.08528 — دعم قوي عند 0.08520"
     },
     "SUSHI": {
         "symbol": "SUSHI-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 48,
         "note": "RSI 4H=48.6 محايد — ننتظر تصحيحاً لـ 0.148-0.150 مع R/R ≥ 1.5"
     },
     "PI": {
         "symbol": "PI-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 35,
         "note": "RSI 4H=31.9 قريب من ذروة البيع — ننتظر تأكيد حجم وارتداد"
     },
     "PYTH": {
         "symbol": "PYTH-USDT",
-        "min_score": 5,
+        "min_score": 6,
         "rsi4h_entry": 55,
         "note": "RSI 4H=69 قرب ذروة شراء — ننتظر تصحيحاً لـ RSI < 55 مع دعم 0.034-0.035"
+    },
+    "BASED": {
+        "symbol": "BASED-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 55,
+        "note": "ارتفع +29% — ننتظر تصحيحاً لـ RSI 4H < 55 وعودة السعر لـ EMA20 (~0.102)"
+    },
+    "BREV": {
+        "symbol": "BREV-USDT",
+        "min_score": 6,
+        "rsi4h_entry": 35,
+        "note": "عملة جديدة — RSI 4H=34.5 قريب من ذروة البيع، ننتظر تراجع السعر لـ EMA20 (0.0695) مع RSI 4H < 35"
     },
 }
 # تتبع آخر تنبيه لكل عملة (لتجنب التكرار)
 last_alert = {}
-ALERT_COOLDOWN = 3600  # ساعة بين كل تنبيهين لنفس العملة
+ALERT_COOLDOWN = 14400  # 4 ساعات بين كل تنبيهين لنفس العملة (موحَّد مع market_scanner)
 
-def send_telegram(msg):
+def send_telegram(msg, chat_id=None):
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
     """إرسال رسالة Telegram"""
     try:
         url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
         r = requests.post(url, json={
-            'chat_id': TELEGRAM_CHAT_ID,
+            'chat_id': chat_id,
             'text': msg,
             'parse_mode': 'HTML'
         }, timeout=10)
@@ -320,50 +351,89 @@ def analyze_coin(name, config):
         'note': config['note']
     }
 
+def fp_price(v):
+    if v < 0.001:
+        s = '%.8f' % v
+        return s.rstrip('0')
+    if v < 1:
+        s = '%.6f' % v
+        return s.rstrip('0')
+    if v < 1000:
+        return '%.4f' % v
+    return '%,.2f' % v
+
+
 def check_and_alert(result):
-    """إرسال تنبيه إذا توفرت الشروط"""
     name = result['name']
     score = result['score']
     min_score = result['min_score']
-
+    price = result['price']
     if score < min_score:
         return False
-
-    # ── فحص إذا كانت العملة لها إشارة مفتوحة في قناة Signal ──
     active_signals = get_active_signal_symbols()
     if name in active_signals:
-        log.info(f'⏭️ تخطي {name} — لها إشارة مفتوحة في Signal (لا تكرار)')
+        log.info('skip %s - open signal' % name)
         return False
-
-    # تحقق من Cooldown
     now = time.time()
     if name in last_alert and (now - last_alert[name]) < ALERT_COOLDOWN:
         return False
-
     last_alert[name] = now
-
-    # بناء الرسالة
-    emoji = '🟢' if score >= 8 else '🟡'
-    msg = f"""{emoji} <b>فرصة دخول — {name}/USDT</b>
-━━━━━━━━━━━━━━━━━━
-💰 السعر: ${result['price']:.5f} ({result['change_pct']:+.2f}%)
-📊 Score: {score}/10
-━━━━━━━━━━━━━━━━━━
-📈 RSI 1H: {result['rsi_1h']:.1f}
-📈 RSI 4H: {result['rsi_4h']:.1f}
-📉 MACD: {'يتحسن ✅' if result['macd_hist'] > 0 else 'هابط ⚠️'}
-"""
-    if result['bb_lower']:
-        msg += f"📉 BB Lower: ${result['bb_lower']:.5f}\n"
-
-    msg += f"""━━━━━━━━━━━━━━━━━━
-✅ الأسباب: {' | '.join(result['reasons'])}
-━━━━━━━━━━━━━━━━━━
-⚠️ للمراجعة والموافقة قبل الدخول"""
-
-    sent = send_telegram(msg)
+    tp1 = round(price * 1.03, 8)
+    tp2 = round(price * 1.06, 8)
+    tp3 = round(price * 1.08, 8)
+    sl  = round(price * 0.975, 8)
+    rr = (tp1 - price) / (price - sl) if (price - sl) > 0 else 0
+    if rr < 1.5:
+        log.info('skip %s: R/R=%.2f' % (name, rr))
+        return False
+    reentry = get_reentry_info(name)
+    stars = chr(0x2B50) * min(score // 2, 5)
+    sep = chr(0x2500) * 30
+    if reentry:
+        h = int(reentry['hours_since'])
+        rb = chr(0x1F504) + ' <b>' + chr(0x625) + chr(0x639) + chr(0x627) + chr(0x62F) + chr(0x629) + ' ' + chr(0x62F) + chr(0x62E) + chr(0x648) + chr(0x644) + '</b> - SL ' + chr(0x636) + chr(0x64F) + chr(0x631) + chr(0x628) + ' ' + chr(0x645) + chr(0x646) + chr(0x630) + ' %d ' % h + chr(0x633) + chr(0x627) + chr(0x639) + chr(0x629) + chr(0xA)
+        rb += chr(0x26A0) + chr(0xFE0F) + ' ' + chr(0x647) + chr(0x630) + chr(0x647) + ' ' + chr(0x635) + chr(0x641) + chr(0x642) + chr(0x629) + ' ' + chr(0x645) + chr(0x633) + chr(0x62A) + chr(0x642) + chr(0x644) + chr(0x629) + ' ' + chr(0x62C) + chr(0x62F) + chr(0x64A) + chr(0x62F) + chr(0x629) + chr(0xA)
+        rb += sep + chr(0xA)
+        title = chr(0x1F504) + ' <b>' + chr(0x625) + chr(0x639) + chr(0x627) + chr(0x62F) + chr(0x629) + ' ' + chr(0x62F) + chr(0x62E) + chr(0x648) + chr(0x644) + ' | ' + name + '/USDT</b>'
+    else:
+        rb = ''
+        title = chr(0x1F4E1) + ' <b>' + chr(0x625) + chr(0x634) + chr(0x627) + chr(0x631) + chr(0x629) + ' ' + chr(0x62F) + chr(0x62E) + chr(0x648) + chr(0x644) + ' | ' + name + '/USDT</b>'
+    from datetime import datetime
+    lines = [
+        title, sep, rb, '',
+        chr(0x1F4B0) + ' <b>' + chr(0x627) + chr(0x644) + chr(0x633) + chr(0x639) + chr(0x631) + ' ' + chr(0x627) + chr(0x644) + chr(0x62D) + chr(0x627) + chr(0x644) + chr(0x64A) + ':</b>  ' + fp_price(price), '',
+        chr(0x1F4E5) + ' <b>' + chr(0x646) + chr(0x642) + chr(0x637) + chr(0x629) + ' ' + chr(0x627) + chr(0x644) + chr(0x62F) + chr(0x62E) + chr(0x648) + chr(0x644) + ':</b>  ' + fp_price(price), '',
+        chr(0x1F5C7) + ' <b>' + chr(0x627) + chr(0x644) + chr(0x647) + chr(0x62F) + chr(0x641) + ' ' + chr(0x627) + chr(0x644) + chr(0x623) + chr(0x648) + chr(0x644) + ':</b>   ' + fp_price(tp1) + ' <b>(+3.0%)</b>',
+        chr(0x1F5C7) + ' <b>' + chr(0x627) + chr(0x644) + chr(0x647) + chr(0x62F) + chr(0x641) + ' ' + chr(0x627) + chr(0x644) + chr(0x62B) + chr(0x627) + chr(0x646) + chr(0x64A) + ':</b>  ' + fp_price(tp2) + ' <b>(+6.0%)</b>',
+        chr(0x1F5C7) + ' <b>' + chr(0x627) + chr(0x644) + chr(0x647) + chr(0x62F) + chr(0x641) + ' ' + chr(0x627) + chr(0x644) + chr(0x62B) + chr(0x627) + chr(0x644) + chr(0x62B) + ':</b>  ' + fp_price(tp3) + ' <b>(+8.0%)</b>',
+        '',
+        chr(0x1F534) + ' <b>' + chr(0x648) + chr(0x642) + chr(0x641) + ' ' + chr(0x627) + chr(0x644) + chr(0x62E) + chr(0x633) + chr(0x627) + chr(0x631) + chr(0x629) + ':</b>  ' + fp_price(sl) + ' <b>(-2.5%)</b>',
+        chr(0x2696) + chr(0xFE0F) + ' <b>' + chr(0x646) + chr(0x633) + chr(0x628) + chr(0x629) + ' ' + chr(0x627) + chr(0x644) + chr(0x645) + chr(0x62E) + chr(0x627) + chr(0x637) + chr(0x631) + chr(0x629) + ':</b>  %.1f:1' % rr,
+        '', sep,
+        stars + ' <b>' + chr(0x642) + chr(0x648) + chr(0x629) + ' ' + chr(0x627) + chr(0x644) + chr(0x625) + chr(0x634) + chr(0x627) + chr(0x631) + chr(0x629) + ' (%d/10)</b>' % score,
+        '',
+        chr(0x1F4CA) + ' RSI 4H: <b>%.0f</b>  |  RSI 1H: <b>%.0f</b>' % (result['rsi_4h'], result['rsi_1h']),
+        '', sep,
+        chr(0x26A0) + chr(0xFE0F) + ' ' + chr(0x647) + chr(0x630) + chr(0x647) + ' ' + chr(0x627) + chr(0x644) + chr(0x625) + chr(0x634) + chr(0x627) + chr(0x631) + chr(0x629) + ' ' + chr(0x644) + chr(0x623) + chr(0x647) + chr(0x62F) + chr(0x627) + chr(0x641) + ' ' + chr(0x62A) + chr(0x639) + chr(0x644) + chr(0x64A) + chr(0x645) + chr(0x64A) + chr(0x629),
+        chr(0x648) + chr(0x644) + chr(0x64A) + chr(0x633) + chr(0x62A) + ' ' + chr(0x646) + chr(0x635) + chr(0x64A) + chr(0x62D) + chr(0x629) + ' ' + chr(0x627) + chr(0x633) + chr(0x62A) + chr(0x62B) + chr(0x645) + chr(0x627) + chr(0x631) + chr(0x64A) + chr(0x629),
+        sep,
+        chr(0x1F550) + ' ' + datetime.now().strftime('%H:%M  |  %Y/%m/%d'),
+    ]
+    msg = chr(0xA).join(lines)
+    sent = send_telegram(msg, chat_id=TELEGRAM_SIGNAL_CHAT)
     if sent:
-        log.info(f'✅ تنبيه أُرسل: {name} Score={score}')
+        log.info('signal sent: %s score=%d' % (name, score))
+        try:
+            try:
+                with open(SIGNAL_ACTIVE_FILE) as f:
+                    active = json.load(f)
+            except Exception:
+                active = {}
+            active[name + '/USDT'] = {'entry': price, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'sl': sl, 'sector': 'Watchlist', 'sent_at': int(now)}
+            with open(SIGNAL_ACTIVE_FILE, 'w') as f:
+                json.dump(active, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.error('save error: %s' % e)
     return sent
 
 def main():

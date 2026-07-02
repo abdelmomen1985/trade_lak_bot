@@ -55,10 +55,14 @@ VOL_15M_MIN = 1.2
 LIQ_ABOVE_PCT = 0.005
 
 # ─── مستويات الدخول ───────────────────────────────────────────────────────────
-TP1_PCT = 0.03
-TP2_PCT = 0.06
-TP3_PCT = 0.10
-SL_PCT  = 0.025
+TP1_PCT = 0.03   # +3% — موحَّد
+TP2_PCT = 0.06   # +6% — موحَّد
+TP3_PCT = 0.08   # +8% — موحَّد (كان 10%)
+SL_PCT  = 0.025  # 2.5% — موحَّد
+MIN_SCORE_BREAKOUT  = 6   # حد أدنى لقوة الإشارة (كان 5)
+SL_HIT_MEMORY_FILE  = "/root/trade_lak_bot/data/sl_hit_memory.json"
+SL_HIT_MEMORY_HOURS = 48
+SIGNALS_ACTIVE_FILE = "/root/trade_lak_bot/data/signal_channel_active.json"
 
 # ─── إنذار السيولة ────────────────────────────────────────────────────────────
 LIQ_WARN_OI_DROP    = -3.0
@@ -192,6 +196,48 @@ class BreakoutSignalSystem:
         if "open_signals" in self.state and symbol in self.state["open_signals"]:
             del self.state["open_signals"][symbol]
             self._save_state()
+
+    def _record_sl_hit(self, symbol: str, sl_price: float):
+        """تسجيل ضربة SL في ذاكرة مشتركة للتنويه بإعادة الدخول لاحقاً"""
+        try:
+            memory = {}
+            if os.path.exists(SL_HIT_MEMORY_FILE):
+                with open(SL_HIT_MEMORY_FILE) as f:
+                    memory = json.load(f)
+            key = f"{symbol}/USDT"
+            memory[key] = {"time": time.time(), "sl_price": sl_price}
+            cutoff = time.time() - (SL_HIT_MEMORY_HOURS * 3600)
+            memory = {k: v for k, v in memory.items() if v.get("time", 0) > cutoff}
+            with open(SL_HIT_MEMORY_FILE, "w") as f:
+                json.dump(memory, f, ensure_ascii=False, indent=2)
+            logger.info(f"📝 [{key}] سُجِّل في sl_hit_memory.json")
+        except Exception as e:
+            logger.error(f"خطأ في _record_sl_hit: {e}")
+
+    def _is_signal_active(self, symbol: str) -> bool:
+        """فحص إذا كانت العملة لها إشارة مفتوحة في signal_channel_active.json"""
+        try:
+            if os.path.exists(SIGNALS_ACTIVE_FILE):
+                with open(SIGNALS_ACTIVE_FILE) as f:
+                    active = json.load(f)
+                return f"{symbol}/USDT" in active or symbol in active
+        except Exception:
+            pass
+        return False
+
+    def _get_reentry_info(self, symbol: str):
+        """فحص إذا كانت العملة ضربت SL مؤخراً"""
+        try:
+            if os.path.exists(SL_HIT_MEMORY_FILE):
+                with open(SL_HIT_MEMORY_FILE) as f:
+                    memory = json.load(f)
+                key = f"{symbol}/USDT"
+                if key in memory:
+                    hours = (time.time() - memory[key].get("time", 0)) / 3600
+                    return {"hours_since": hours, "sl_price": memory[key].get("sl_price", 0)}
+        except Exception:
+            pass
+        return None
 
     # ─── جلب البيانات ─────────────────────────────────────────────────────────
     def _get_candles(self, symbol: str, bar: str = "1H", limit: int = 60) -> Optional[List[Dict]]:
@@ -469,7 +515,7 @@ class BreakoutSignalSystem:
         ema_ok = checks['ema_15m']['met'] and checks['ema_5m']['met']
         rsi_ok = checks['rsi_15m']['met'] or checks['rsi_5m']['met']
         met_count = sum(1 for c in checks.values() if c['met'])
-        confirmed = ema_ok and rsi_ok and met_count >= 5
+        confirmed = ema_ok and rsi_ok and met_count >= MIN_SCORE_BREAKOUT
         return {
             'confirmed': confirmed, 'met_count': met_count,
             'checks': checks, 'tf_15m': tf_15m, 'tf_5m': tf_5m,
@@ -499,10 +545,10 @@ class BreakoutSignalSystem:
         elif sl_pct_actual > 2.0:
             sl_raw = entry * 0.980   # -2%
             sl_pct_actual = 2.0
-        # الأهداف: TP1 ≥3%, TP2 ≥5%, TP3 بين 7-8%
-        tp1_pct = max(0.03, TP1_PCT)
-        tp2_pct = max(0.05, TP2_PCT)
-        tp3_pct = min(0.08, max(0.07, TP3_PCT))
+        # الأهداف: موحَّدة TP1=3%, TP2=6%, TP3=8%
+        tp1_pct = TP1_PCT   # 3%
+        tp2_pct = TP2_PCT   # 6%
+        tp3_pct = TP3_PCT   # 8%
         tp1_price = entry * (1 + tp1_pct)
         tp2_price = entry * (1 + tp2_pct)
         tp3_price = entry * (1 + tp3_pct)
@@ -605,8 +651,15 @@ class BreakoutSignalSystem:
             return False
 
     def _should_send_entry(self, symbol: str) -> bool:
+        # فحص 1: Cooldown
         last = self.state.get(f"{symbol}_signal", 0)
-        return (time.time() - last) > (COOLDOWN_HOURS * 3600)
+        if (time.time() - last) <= (COOLDOWN_HOURS * 3600):
+            return False
+        # فحص 2: هل للعملة إشارة مفتوحة بالفعل في القناة
+        if self._is_signal_active(symbol):
+            logger.info(f"⏭️ {symbol}: لها إشارة مفتوحة بالفعل — لن تُرسل إشارة جديدة")
+            return False
+        return True
 
     def _mark_entry_sent(self, symbol: str):
         self.state[f"{symbol}_signal"] = time.time()
@@ -654,6 +707,9 @@ class BreakoutSignalSystem:
                     msg = self._format_close_result(symbol, sig, current_price, close_reason)
                     self._send_telegram(msg)
                     logger.info(f"{'❌' if close_reason == 'SL' else '🏆'} {close_reason}: {symbol} @ {current_price} ({pnl_pct:+.2f}%)")
+                    # تسجيل SL في الذاكرة المشتركة للتنويه بإعادة الدخول لاحقاً
+                    if close_reason == 'SL':
+                        self._record_sl_hit(symbol, sig.get('sl', 0))
                     to_close.append(symbol)
                     continue
 

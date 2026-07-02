@@ -15,6 +15,8 @@ from config.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_SIGNAL_
 # ── ملف قائمة المراقبة الديناميكية ─────────────────────────
 DYNAMIC_WATCHLIST_FILE = os.path.join(BASE_DIR, "data", "dynamic_watchlist.json")
 SCANNER_STATE_FILE     = os.path.join(BASE_DIR, "data", "scanner_state.json")
+SL_HIT_MEMORY_FILE     = os.path.join(BASE_DIR, "data", "sl_hit_memory.json")  # ذاكرة العملات التي ضربت SL مؤخراً
+SL_HIT_MEMORY_HOURS    = 48   # نتذكر SL لمدة 48 ساعة
 LOG_FILE               = os.path.join(BASE_DIR, "logs", "market_scanner.log")
 
 # ── إعداد السجلات ─────────────────────────────────────────
@@ -63,6 +65,27 @@ def send_telegram(msg: str, chat_id: str = None) -> bool:
         log.error(f"خطأ Telegram: {e}")
         return False
 
+def load_sl_memory() -> dict:
+    """تحميل ذاكرة العملات التي ضربت SL مؤخراً"""
+    try:
+        if os.path.exists(SL_HIT_MEMORY_FILE):
+            with open(SL_HIT_MEMORY_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def save_sl_memory(memory: dict):
+    """حفظ ذاكرة SL مع حذف الإدخالات القديمة (> 48 ساعة)"""
+    now = time.time()
+    cutoff = now - (SL_HIT_MEMORY_HOURS * 3600)
+    cleaned = {k: v for k, v in memory.items() if v.get("time", 0) > cutoff}
+    try:
+        with open(SL_HIT_MEMORY_FILE, "w") as f:
+            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.error(f"خطأ في حفظ sl_memory: {e}")
+
 def send_signal_entry(op: dict):
     """إرسال توصية دخول على قناة Trade Lak Signal"""
     base    = op["base"]
@@ -78,7 +101,7 @@ def send_signal_entry(op: dict):
 
     # ── التحقق من نسبة R/R ≥ 1.5:1 ──
     tp1 = round(entry * 1.03, 8)
-    tp2 = round(entry * 1.05, 8)
+    tp2 = round(entry * 1.06, 8)  # موحَّد: +6% (كان 5%)
     tp3 = round(entry * 1.08, 8)
     risk   = entry - sl
     reward = tp1 - entry
@@ -100,16 +123,35 @@ def send_signal_entry(op: dict):
     stars = '\u2b50' * min(op['score'] // 2, 5)
     rr_display = f"{rr:.1f}:1"
 
+    # ── فحص إذا كانت العملة ضربت SL مؤخراً (إعادة دخول) ──
+    sl_memory = load_sl_memory()
+    sym_key_mem = f"{base}/USDT"
+    is_reentry = sym_key_mem in sl_memory
+    if is_reentry:
+        sl_info = sl_memory[sym_key_mem]
+        hours_since_sl = (time.time() - sl_info.get("time", 0)) / 3600
+        reentry_note = (
+            f"🔄 <b>إعادة دخول</b> — الصفقة السابقة أُغلقت بوقف الخسارة منذ {hours_since_sl:.0f} ساعة\n"
+            f"⚠️ هذه صفقة مستقلة جديدة بأهداف ووقف خسارة مختلفة\n"
+            f"──────────────────────────────\n"
+        )
+        signal_title = f"🔄 <b>إعادة دخول | {base}/USDT</b>"
+        log.info(f"[{base}] 🔄 إشارة إعادة دخول — SL ضُرب منذ {hours_since_sl:.0f} ساعة")
+    else:
+        reentry_note = ""
+        signal_title = f"📡 <b>إشارة دخول | {base}/USDT</b>"
+
     msg = (
-        f"📡 <b>إشارة دخول | {base}/USDT</b>\n"
+        f"{signal_title}\n"
         f"──────────────────────────────\n"
+        f"{reentry_note}"
         f"\n"
         f"💰 <b>السعر الحالي:</b>  {fp(entry)}\n"
         f"\n"
         f"📥 <b>نقطة الدخول:</b>  {fp(entry)}\n"
         f"\n"
         f"🖇 <b>الهدف الأول:</b>   {fp(tp1)} <b>(+3.0%)</b>\n"
-        f"🖇 <b>الهدف الثاني:</b>  {fp(tp2)} <b>(+5.0%)</b>\n"
+        f"🖇 <b>الهدف الثاني:</b>  {fp(tp2)} <b>(+6.0%)</b>\n"
         f"🖇 <b>الهدف الثالث:</b>  {fp(tp3)} <b>(+8.0%)</b>\n"
         f"\n"
         f"🔴 <b>وقف الخسارة:</b>  {fp(sl)} <b>({sl_pct:.1f}%)</b>\n"
@@ -672,11 +714,18 @@ def run_scan():
                     else:
                         log.info(f"⏭️ تخطي {base} — إشارة مفتوحة بالفعل (score={score})")
                 else:
-                    # لا توجد إشارة مفتوحة — أرسل إشارة دخول جديدة
+                    # لا توجد إشارة مفتوحة — أرسل إشارة دخول جديدة (أو إعادة دخول)
+                    was_reentry = sym_key in load_sl_memory()
                     if send_signal_entry(op):
                         last_alerts[base] = now
                         alerts_sent += 1
-                        log.info(f"🟢 توصية دخول أُرسلت: {base} (score={score})")
+                        # حذف من ذاكرة SL بعد إرسال إشارة إعادة الدخول
+                        sl_mem = load_sl_memory()
+                        if sym_key in sl_mem:
+                            del sl_mem[sym_key]
+                            save_sl_memory(sl_mem)
+                        label = '(إعادة دخول)' if was_reentry else '(صفقة جديدة)'
+                        log.info(f"🟢 توصية دخول أُرسلت: {base} (score={score}) {label}")
 
     # 3. تنظيف العملات القديمة من القائمة الديناميكية (أكثر من 48 ساعة بدون تحديث)
     to_remove = []

@@ -161,6 +161,26 @@ def get_price(coin: str) -> float:
     return 0.0
 
 # ─── تحليل عملة واحدة ────────────────────────────────────────────────────────
+def get_last_candle(coin: str) -> dict:
+    """جلب بيانات الشمعة الاخيرة (1H) للتحقق من اتجاه الحركة"""
+    try:
+        d = _okx_get('/market/candles', {'instId': f"{coin}-USDT", 'bar': '1H', 'limit': '2'})
+        rows = d.get('data', [])
+        if rows:
+            row = rows[0]
+            open_p  = float(row[1])
+            close_p = float(row[4])
+            return {
+                'open':     open_p,
+                'close':    close_p,
+                'is_green': close_p > open_p,
+                'body_pct': (close_p - open_p) / open_p * 100 if open_p > 0 else 0,
+            }
+    except Exception:
+        pass
+    return {'open': 0, 'close': 0, 'is_green': True, 'body_pct': 0}
+
+
 def analyze_coin(coin: str) -> Optional[Dict]:
     """تحليل عملة وإرجاع نتيجة التراكم"""
     try:
@@ -200,6 +220,10 @@ def analyze_coin(coin: str) -> Optional[Dict]:
 
         # السعر
         price = get_price(coin)
+        # فحص اتجاه الشمعة الاخيرة
+        candle = get_last_candle(coin)
+        is_green_candle = candle['is_green']
+        candle_body_pct = candle['body_pct']
 
         # ─── تقييم الشروط ──────────────────────────────────────────────────
         conditions = {
@@ -230,6 +254,11 @@ def analyze_coin(coin: str) -> Optional[Dict]:
             },
         }
 
+        conditions['candle_green'] = {
+            'met': is_green_candle,
+            'value': candle_body_pct,
+            'label': 'Candle Green' if is_green_candle else 'Candle Red',
+        }
         met_count = sum(1 for c in conditions.values() if c['met'])
 
         return {
@@ -242,7 +271,9 @@ def analyze_coin(coin: str) -> Optional[Dict]:
             'h1_vol_chg':   h1_vol_chg,
             'avg_funding':  funding,
             'ls_current':   ls_current,
-            'ls_improving': ls_improving,
+            'ls_improving':    ls_improving,
+            'is_green_candle': is_green_candle,
+            'candle_body_pct': candle_body_pct,
         }
     except Exception as e:
         logger.error(f"analyze_coin({coin}) error: {e}")
@@ -382,6 +413,10 @@ def scan_all():
                 h1_vol >= ALERT2_VOL_RISE_MIN and
                 funding <= ALERT2_FUNDING_MAX
             )
+            # فلتر الشمعة: لا نرسل اذا كانت الشمعة حمراء
+            if not analysis.get('is_green_candle', True):
+                logger.debug(f'skip {coin}: red candle - not bullish')
+                continue
             if is_alert2 and _can_alert(state, coin, 2):
                 msg = format_alert2(analysis)
                 if send_telegram(msg):
