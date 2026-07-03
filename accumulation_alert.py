@@ -21,6 +21,9 @@ import time
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from pattern_filter import check_smart_money_pattern
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +68,58 @@ EXCLUDE_COINS = {
     'EDGE','ZKP','OL','SYRUP','WAL','VANA','PUMP','LAYER','GIGGLE',
     'NEIRO','MEME','PI','RIVER','COAI','ASTER','DRAM',
 }
+
+
+# ─── قاموس القطاعات ───────────────────────────────────────────────────────────
+COIN_SECTORS = {
+    # Layer 1
+    'BTC': 'Layer 1', 'ETH': 'Layer 1', 'SOL': 'Layer 1', 'BNB': 'Layer 1',
+    'ADA': 'Layer 1', 'AVAX': 'Layer 1', 'ATOM': 'Layer 1', 'NEAR': 'Layer 1',
+    'APT': 'Layer 1', 'SUI': 'Layer 1', 'SEI': 'Layer 1', 'TON': 'Layer 1',
+    'TRX': 'Layer 1', 'XLM': 'Layer 1', 'ALGO': 'Layer 1', 'HBAR': 'Layer 1',
+    'ICP': 'Layer 1', 'FTM': 'Layer 1', 'BERA': 'Layer 1', 'S': 'Layer 1',
+    # Layer 2
+    'ARB': 'Layer 2', 'OP': 'Layer 2', 'MATIC': 'Layer 2', 'IMX': 'Layer 2',
+    'STRK': 'Layer 2', 'ZK': 'Layer 2', 'MANTA': 'Layer 2',
+    # DeFi
+    'UNI': 'DeFi', 'AAVE': 'DeFi', 'CRV': 'DeFi', 'MKR': 'DeFi',
+    'COMP': 'DeFi', 'SNX': 'DeFi', 'SUSHI': 'DeFi', 'GMX': 'DeFi',
+    'DYDX': 'DeFi', 'HYPE': 'DeFi', 'JUP': 'DeFi', 'PENDLE': 'DeFi',
+    'ENA': 'DeFi', 'ETHFI': 'DeFi',
+    # Oracle / Infrastructure
+    'LINK': 'Oracle', 'BAND': 'Oracle', 'API3': 'Oracle',
+    'GRT': 'Infrastructure', 'LPT': 'Infrastructure',
+    # Privacy
+    'XMR': 'Privacy', 'ZEC': 'Privacy', 'DASH': 'Privacy',
+    'LIT': 'Privacy', 'SCRT': 'Privacy', 'ROSE': 'Privacy',
+    # AI / Data
+    'WLD': 'AI', 'FET': 'AI', 'AGIX': 'AI', 'OCEAN': 'AI',
+    'TAO': 'AI', 'RENDER': 'AI', 'AKT': 'AI', 'IO': 'AI',
+    # Storage / Web3
+    'FIL': 'Storage', 'AR': 'Storage', 'STORJ': 'Storage', 'HNT': 'Storage',
+    # Gaming / Metaverse
+    'AXS': 'Gaming', 'SAND': 'Gaming', 'MANA': 'Gaming',
+    'GALA': 'Gaming', 'BEAM': 'Gaming',
+    # Meme
+    'DOGE': 'Meme', 'SHIB': 'Meme', 'PEPE': 'Meme',
+    'FLOKI': 'Meme', 'WIF': 'Meme', 'BONK': 'Meme',
+    # Payments
+    'XRP': 'Payments', 'LTC': 'Payments', 'BCH': 'Payments',
+    # Staking / LST
+    'LDO': 'Staking', 'RPL': 'Staking', 'ANKR': 'Staking', 'SSV': 'Staking',
+    # Real World Assets
+    'ONDO': 'RWA', 'PAXG': 'RWA', 'XAUT': 'RWA',
+    # Derivatives
+    'INJ': 'Derivatives',
+    # Interop
+    'DOT': 'Interop', 'RUNE': 'Interop', 'AXL': 'Interop', 'ZRO': 'Interop',
+    # Exchange Tokens
+    'OKB': 'Exchange Token', 'CRO': 'Exchange Token',
+}
+
+def get_sector(coin: str) -> str:
+    """يُعيد اسم القطاع للعملة، أو 'Crypto' إذا لم تُعرف"""
+    return COIN_SECTORS.get(coin.upper(), 'Crypto')
 
 # ─── مساعد تنسيق السعر ────────────────────────────────────────────────────────
 def _fmt_price(price: float) -> str:
@@ -338,6 +393,7 @@ def format_alert1(analysis: Dict) -> str:
         f"🔔 <b>تنبيه أول — تراكم صامت</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"💎 <b>{coin}/USDT</b>\n"
+        f"🏷 القطاع: <b>{get_sector(coin)}</b>\n"
         f"💰 السعر: <b>{price}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>المؤشرات:</b>\n"
@@ -370,6 +426,7 @@ def format_alert2(analysis: Dict) -> str:
         f"🚨 <b>تنبيه ثانٍ — تراكم متصاعد</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"💎 <b>{coin}/USDT</b>\n"
+        f"🏷 القطاع: <b>{get_sector(coin)}</b>\n"
         f"💰 السعر: <b>{price}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 <b>المؤشرات:</b>\n"
@@ -416,6 +473,16 @@ def scan_all():
             # فلتر الشمعة: لا نرسل اذا كانت الشمعة حمراء
             if not analysis.get('is_green_candle', True):
                 logger.debug(f'skip {coin}: red candle - not bullish')
+                continue
+            # ─── فلتر بصمة الحركة (Smart Money Pattern) ───────────────────
+            # يفحص: EMA50 + MACD+ + RSI(40-75) + OI صاعد (3 من 4 على الأقل)
+            pattern = check_smart_money_pattern(coin)
+            if not pattern['passed']:
+                logger.debug(
+                    f'skip {coin}: pattern failed (score {pattern["score"]}/4) '
+                    f'EMA50={pattern["above_ema50"]} MACD={pattern["macd_positive"]} '
+                    f'RSI={pattern["rsi_value"]} OI={pattern["oi_change"]}'
+                )
                 continue
             if is_alert2 and _can_alert(state, coin, 2):
                 msg = format_alert2(analysis)
