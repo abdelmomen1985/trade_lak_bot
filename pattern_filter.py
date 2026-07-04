@@ -121,3 +121,56 @@ def check_smart_money_pattern(coin: str) -> dict:
         }
     })
     return result
+
+
+# ─── قاموس القطاعات ───────────────────────────────────────────────────────────
+COIN_SECTORS = {
+    # Layer 1
+    'BTC': 'Layer 1', 'ETH': 'Layer 1', 'SOL': 'Layer 1', 'BNB': 'Layer 1',
+    'ADA': 'Layer 1', 'AVAX': 'Layer 1', 'ATOM': 'Layer 1', 'NEAR': 'Layer 1',
+    'APT': 'Layer 1', 'SUI': 'Layer 1', 'SEI': 'Layer 1', 'TON': 'Layer 1',
+    'TRX': 'Layer 1', 'XLM': 'Layer 1', 'ALGO': 'Layer 1', 'HBAR': 'Layer 1',
+    'ICP': 'Layer 1', 'FTM': 'Layer 1', 'BERA': 'Layer 1', 'S': 'Layer 1',
+    # Layer 2
+    'ARB': 'Layer 2', 'OP': 'Layer 2', 'MATIC': 'Layer 2', 'IMX': 'Layer 2',
+    'STRK': 'Layer 2', 'ZK': 'Layer 2', 'MANTA': 'Layer 2',
+    # DeFi
+    'UNI': 'DeFi', 'AAVE': 'DeFi', 'CRV': 'DeFi', 'MKR': 'DeFi',
+    'COMP': 'DeFi', 'SNX': 'DeFi', 'SUSHI': 'DeFi', 'GMX': 'DeFi',
+    'DYDX': 'DeFi', 'HYPE': 'DeFi', 'JUP': 'DeFi', 'PENDLE': 'DeFi',
+    'ENA': 'DeFi', 'ETHFI': 'DeFi',
+    # Oracle / Infrastructure
+    'LINK': 'Oracle', 'BAND': 'Oracle', 'API3': 'Oracle',
+    'GRT': 'Infrastructure', 'LPT': 'Infrastructure',
+    # Privacy
+    'XMR': 'Privacy', 'ZEC': 'Privacy', 'DASH': 'Privacy',
+    'LIT': 'Privacy', 'SCRT': 'Privacy', 'ROSE': 'Privacy',
+    # AI / Data
+    'WLD': 'AI', 'FET': 'AI', 'AGIX': 'AI', 'OCEAN': 'AI',
+    'TAO': 'AI', 'RENDER': 'AI', 'AKT': 'AI', 'IO': 'AI',
+    # Storage / Web3
+    'FIL': 'Storage', 'AR': 'Storage', 'STORJ': 'Storage', 'HNT': 'Storage',
+    # Gaming / Metaverse
+    'AXS': 'Gaming', 'SAND': 'Gaming', 'MANA': 'Gaming',
+    'GALA': 'Gaming', 'BEAM': 'Gaming',
+    # Meme
+    'DOGE': 'Meme', 'SHIB': 'Meme', 'PEPE': 'Meme',
+    'FLOKI': 'Meme', 'WIF': 'Meme', 'BONK': 'Meme',
+    # Payments
+    'XRP': 'Payments', 'LTC': 'Payments', 'BCH': 'Payments',
+    # Staking / LST
+    'LDO': 'Staking', 'RPL': 'Staking', 'ANKR': 'Staking', 'SSV': 'Staking',
+    # Real World Assets
+    'ONDO': 'RWA', 'PAXG': 'RWA', 'XAUT': 'RWA',
+    # Derivatives
+    'INJ': 'Derivatives',
+    # Interop
+    'DOT': 'Interop', 'RUNE': 'Interop', 'AXL': 'Interop', 'ZRO': 'Interop',
+    # Exchange Tokens
+    'OKB': 'Exchange Token', 'CRO': 'Exchange Token',
+}
+
+
+def get_sector(coin: str) -> str:
+    """يُعيد اسم القطاع للعملة، أو 'Crypto' إذا لم تُعرف"""
+    return COIN_SECTORS.get(coin.upper(), 'Crypto')

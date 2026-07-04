@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-from pattern_filter import check_smart_money_pattern
+from pattern_filter import check_smart_money_pattern, get_sector
 
 logging.basicConfig(
     level=logging.INFO,

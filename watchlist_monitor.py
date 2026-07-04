@@ -153,6 +153,24 @@ WATCHLIST = {
         "rsi4h_entry": 35,
         "note": "عملة جديدة — RSI 4H=34.5 قريب من ذروة البيع، ننتظر تراجع السعر لـ EMA20 (0.0695) مع RSI 4H < 35"
     },
+    "VIRTUAL": {
+        "symbol": "VIRTUAL-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 55,
+        "note": "RSI 4H=66 تشبع شراء — ننتظر تصحيحاً لـ RSI 4H < 55 مع عودة السعر لمنطقة BB Mid (0.53-0.55)"
+    },
+    "AAVE": {
+        "symbol": "AAVE-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 45,
+        "note": "RSI 4H=52 محايد، MACD+ — ننتظر تصحيحاً لـ RSI 4H < 45 مع عودة السعر لمنطقة BB Mid أو دونها (84-86)"
+    },
+    "RENDER": {
+        "symbol": "RENDER-USDT",
+        "min_score": 5,
+        "rsi4h_entry": 50,
+        "note": "RSI 4H=64 قرب BB Upper — ننتظر تصحيحاً لـ RSI 4H < 50 مع عودة السعر لمنطقة BB Mid (1.55-1.57)"
+    },
 }
 # تتبع آخر تنبيه لكل عملة (لتجنب التكرار)
 last_alert = {}

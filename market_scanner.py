@@ -7,6 +7,9 @@ market_scanner.py — مسح شامل لأكثر من 100 عملة على OKX
 
 import sys, os, json, time, requests, numpy as np, logging
 from datetime import datetime
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from pattern_filter import get_sector
 
 BASE_DIR = "/root/trade_lak_bot"
 sys.path.insert(0, BASE_DIR)
@@ -570,6 +573,7 @@ def send_volume_spike_alert(spike: dict) -> bool:
     msg = (
         f"\u26a1 <b>\u062d\u062c\u0645 \u0627\u0633\u062a\u062b\u0646\u0627\u0626\u064a \u2014 {spike['base']}/USDT</b>\n"
         f"{SEP}\n"
+        f"\U0001f3f7 \u0627\u0644\u0642\u0637\u0627\u0639: <b>{get_sector(spike['base'])}</b>\n"
         f"\U0001f4b0 \u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u062d\u0627\u0644\u064a: <b>${fp(spike['price'])}</b>\n"
         f"{direction} \u0627\u0644\u062a\u063a\u064a\u0631 \u0641\u064a \u0627\u0644\u0634\u0645\u0639\u0629: <b>{spike['price_change']:+.2f}%</b>\n"
         f"\U0001f4a7 \u062d\u062c\u0645 \u0627\u0644\u0634\u0645\u0639\u0629: <b>${spike['vol_usdt']:,.0f}</b>\n"
