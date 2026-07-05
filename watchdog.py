@@ -132,15 +132,23 @@ def check_services() -> list:
 
 # ─── 2. فحص الاتصال بـ OKX ────────────────────────────────
 def check_okx() -> tuple:
-    try:
-        r = requests.get(PAID_APIS['OKX'], timeout=10)
-        if r.status_code == 200:
-            logger.info("✅ OKX API: متصل")
-            _clear_alert('api_okx')
-            return True, None
-        return False, f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, str(e)
+    """يُعيد المحاولة 3 مرات قبل إعلان الانقطاع — يمنع التنبيهات الكاذبة"""
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            r = requests.get(PAID_APIS['OKX'], timeout=10)
+            if r.status_code == 200:
+                logger.info("✅ OKX API: متصل")
+                _clear_alert('api_okx')
+                return True, None
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 3:
+            logger.warning(f"⚠️ OKX محاولة {attempt}/3 فشلت: {last_err} — إعادة المحاولة بعد 5 ثوانٍ")
+            time.sleep(5)
+    logger.error(f"❌ OKX API: فشل بعد 3 محاولات — {last_err}")
+    return False, last_err
 
 # ─── 3. فحص الاتصال بـ CoinGlass ─────────────────────────
 def check_coinglass() -> tuple:

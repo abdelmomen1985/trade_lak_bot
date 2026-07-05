@@ -48,8 +48,16 @@ VOL_SPIKE_STATE_FILE = os.path.join(BASE_DIR, "data", "vol_spike_state.json")
 
 # عملات مستثناة (stablecoins + wrapped + meme منخفض السيولة)
 EXCLUDED = {
+    # USD stablecoins
     "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","USDD","GUSD",
-    "WBTC","WETH","STETH","RETH","CBETH","WSTETH",
+    "USDG","PYUSD","FDUSD","USDE","SUSD","CRVUSD","GHO","USDX","USDS",
+    "CUSD","MUSD","HUSD","OUSD","DOLA","RLUSD","RESOLV","USDN","USDY",
+    # EUR stablecoins
+    "EURC","EUROC","EURS","EURT","EURA","EUROE",
+    # Gold-backed / commodity stablecoins
+    "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD",
+    # Wrapped tokens
+    "WBTC","WETH","STETH","RETH","CBETH","WSTETH","WEETH","RSETH","EZETH","WBETH",
     "BTC","ETH",  # كبيرة جداً — سيولة مختلفة
 }
 

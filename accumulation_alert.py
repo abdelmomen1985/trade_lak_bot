@@ -61,8 +61,15 @@ EXCLUDE_COINS = {
     'HPE','WDC','MSTR','ASML','IREN','LPT','FLNC','NVDA','QQQ','CRCL',
     # معادن وسلع
     'XAU','XAG','XCU','XPT','XPD','CL','BZ',
-    # stablecoins
+    # stablecoins (USD / EUR / ذهب / wrapped) — لا إشارات لها
     'USDC','USDT','BUSD','DAI','USDG','RLUSD','RESOLV',
+    'TUSD','USDP','FRAX','LUSD','USDD','GUSD','PYUSD',
+    'USDE','SUSD','CRVUSD','GHO','FDUSD','USDX','USDS',
+    'CUSD','MUSD','HUSD','OUSD','DOLA','BEAN','USDN',
+    'USDJ','USDQ','USDK','USDL','USDM','USDR','USDY',
+    'EURC','EUROC','EURS','EURT','EURA','EUROE',
+    'PAXG','XAUT','XAUTUSDT','PAXGUSDT','PMGT','DGLD','CACHE','TGOLD','AGLD',
+    'WBTC','WETH','STETH','RETH','CBETH','WSTETH','WEETH','RSETH','EZETH','WBETH',
     # عملات غير معروفة / سيولة مصطنعة
     'LAB','H','BEAT','NES','IP','ZBT','KITE','EWT','KGEN','LITE','ACU',
     'EDGE','ZKP','OL','SYRUP','WAL','VANA','PUMP','LAYER','GIGGLE',
