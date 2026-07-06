@@ -566,10 +566,16 @@ def check_volume_spike(sym_info: dict) -> dict | None:
         return None
 
 def send_volume_spike_alert(spike: dict) -> bool:
-    """إرسال تنبيه الحجم الاستثنائي على قناة Signal"""
-    SEP = "\u2500" * 30
+    """
+    إرسال تنبيه الحجم الاستثنائي مع بصمة الحركة ودرجة الثقة.
+    - 4/4 أو 3/4 → إشارة دخول مباشرة
+    - 2/4         → مراقبة
+    - 1/4 أو 0/4 → يُضاف للـ watchlist تلقائياً بدون تنبيه
+    """
+    SEP = "─" * 30
+    base = spike["base"]
     ratio_pct = spike["ratio"] * 100
-    direction = "\U0001f4c8" if spike["price_change"] > 0 else "\U0001f4c9"
+    direction = "📈" if spike["price_change"] > 0 else "📉"
 
     def fp(v):
         if v == 0: return "0"
@@ -578,20 +584,78 @@ def send_volume_spike_alert(spike: dict) -> bool:
         if v < 1000: return f"{v:.4f}"
         return f"{v:,.2f}"
 
+    # ── فحص بصمة الحركة ──────────────────────────────────────────────────────
+    try:
+        pattern = check_smart_money_pattern(base)
+        score   = pattern.get('score', 0)
+        above_ema   = pattern.get('above_ema50', False)
+        macd_pos    = pattern.get('macd_positive', False)
+        rsi_ok      = pattern.get('rsi_in_range', False)
+        oi_rising   = pattern.get('oi_rising', False)
+        rsi_val     = pattern.get('rsi_value')
+        oi_chg      = pattern.get('oi_change')
+    except Exception:
+        score, above_ema, macd_pos, rsi_ok, oi_rising = 0, False, False, False, False
+        rsi_val, oi_chg = None, None
+
+    # ── إذا كانت الدرجة أقل من 2 → watchlist فقط بدون تنبيه ─────────────────
+    if score < 2:
+        try:
+            _add_to_watchlist_auto(base, spike['price'], reason=f"حجم {spike['ratio']:.1f}x — بصمة {score}/4")
+        except Exception:
+            pass
+        log.info(f"[{base}] حجم استثنائي {spike['ratio']:.1f}x — بصمة {score}/4 → watchlist فقط")
+        return False  # لا يُحسب كتنبيه مُرسل
+
+    # ── تحديد نوع التنبيه ────────────────────────────────────────────────────
+    if score >= 3:
+        header    = f"🚀 <b>إشارة دخول محتملة — {base}/USDT</b>"
+        verdict   = f"✅ <b>بصمة الحركة مكتملة ({score}/4) — مناسب للدخول</b>"
+    else:
+        header    = f"⚡ <b>حجم استثنائي — {base}/USDT</b>"
+        verdict   = f"⚠️ <b>بصمة جزئية ({score}/4) — راقب للتأكيد</b>"
+
+    # ── بناء شروط البصمة ─────────────────────────────────────────────────────
+    cond_ema  = f"  {'✅' if above_ema  else '❌'} فوق EMA50 (4H)"
+    cond_macd = f"  {'✅' if macd_pos   else '❌'} MACD إيجابي"
+    cond_rsi  = f"  {'✅' if rsi_ok     else '❌'} RSI {f'{rsi_val:.1f}' if rsi_val else '—'} (نطاق 40-75)"
+    cond_oi   = f"  {'✅' if oi_rising  else '❌'} OI صاعد {f'{oi_chg:+.1f}%' if oi_chg is not None else '—'}"
+
     msg = (
-        f"\u26a1 <b>\u062d\u062c\u0645 \u0627\u0633\u062a\u062b\u0646\u0627\u0626\u064a \u2014 {spike['base']}/USDT</b>\n"
+        f"{header}\n"
         f"{SEP}\n"
-        f"\U0001f3f7 \u0627\u0644\u0642\u0637\u0627\u0639: <b>{get_sector(spike['base'])}</b>\n"
-        f"\U0001f4b0 \u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u062d\u0627\u0644\u064a: <b>${fp(spike['price'])}</b>\n"
-        f"{direction} \u0627\u0644\u062a\u063a\u064a\u0631 \u0641\u064a \u0627\u0644\u0634\u0645\u0639\u0629: <b>{spike['price_change']:+.2f}%</b>\n"
-        f"\U0001f4a7 \u062d\u062c\u0645 \u0627\u0644\u0634\u0645\u0639\u0629: <b>${spike['vol_usdt']:,.0f}</b>\n"
-        f"\U0001f4ca \u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u062d\u062c\u0645 \u0627\u0644\u0639\u0627\u062f\u064a: <b>${spike['avg_vol']:,.0f}</b>\n"
-        f"\U0001f525 \u0646\u0633\u0628\u0629 \u0627\u0644\u062d\u062c\u0645: <b>{ratio_pct:.0f}%</b> \u0645\u0646 \u0627\u0644\u0645\u062a\u0648\u0633\u0637\n"
+        f"🏷 القطاع: <b>{get_sector(base)}</b>\n"
+        f"💰 السعر الحالي: <b>${fp(spike['price'])}</b>\n"
+        f"{direction} التغير في الشمعة: <b>{spike['price_change']:+.2f}%</b>\n"
+        f"💧 حجم الشمعة: <b>${spike['vol_usdt']:,.0f}</b>\n"
+        f"📊 متوسط الحجم العادي: <b>${spike['avg_vol']:,.0f}</b>\n"
+        f"🔥 نسبة الحجم: <b>{ratio_pct:.0f}%</b> من المتوسط\n"
         f"{SEP}\n"
-        f"\u26a0\ufe0f \u0642\u062f \u064a\u0634\u064a\u0631 \u0625\u0644\u0649 \u062e\u0628\u0631 \u0623\u0648 \u062a\u062f\u062e\u0644 \u0645\u0641\u0627\u062c\u0626 \u2014 \u0631\u0627\u0642\u0628 \u0627\u0644\u062d\u0631\u0643\u0629\n"
-        f"\U0001f550 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+        f"🔬 <b>بصمة الحركة {score}/4</b>\n"
+        f"{cond_ema}\n"
+        f"{cond_macd}\n"
+        f"{cond_rsi}\n"
+        f"{cond_oi}\n"
+        f"{SEP}\n"
+        f"{verdict}\n"
+        f"🕐 {datetime.now().strftime('%Y/%m/%d %H:%M')}"
     )
     return send_telegram(msg, chat_id=TELEGRAM_LIQUIDITY_CHAT)
+
+
+def _add_to_watchlist_auto(coin: str, price: float, reason: str = ""):
+    """يُضيف عملة تلقائياً لـ dynamic_watchlist عند فشل بصمة الحركة"""
+    wl = load_dynamic_watchlist()
+    if coin not in wl:
+        wl[coin] = {
+            "added_at":    datetime.now().isoformat(),
+            "entry_price": price,
+            "reason":      reason,
+            "auto":        True,
+            "source":      "volume_spike_filter",
+        }
+        save_dynamic_watchlist(wl)
+        log.info(f"[{coin}] أُضيف تلقائياً للـ dynamic_watchlist — {reason}")
 
 def run_volume_spike_scan(symbols: list):
     """مسح الحجم الاستثنائي — فقط للعملات ذات إشارات نشطة في Signal"""
@@ -607,11 +671,19 @@ def run_volume_spike_scan(symbols: list):
         log.info("⚡ لا توجد إشارات نشطة — تخطي فحص الحجم الاستثنائي")
         return
 
-    # استخراج أسماء العملات النشطة
+    # استخراج أسماء العملات النشطة (مع استثناء المستقرات)
+    _STABLE_EXCLUDE = {
+        "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","USDD","GUSD",
+        "USDG","PYUSD","FDUSD","USDE","SUSD","CRVUSD","GHO","USDX","USDS",
+        "RLUSD","RESOLV","EURC","EUROC","EURS","EURT","EURA","EUROE",
+        "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD",
+        "WBTC","WETH","STETH","RETH","CBETH","WSTETH","WEETH","RSETH","EZETH","WBETH",
+    }
     active_bases = set()
     for key in active_signals.keys():
         base = key.replace("-USDT", "").replace("/USDT", "").upper()
-        active_bases.add(base)
+        if base not in _STABLE_EXCLUDE:
+            active_bases.add(base)
 
     log.info(f"⚡ فحص حجم استثنائي لـ {len(active_bases)} عملة نشطة: {', '.join(active_bases)}")
 
