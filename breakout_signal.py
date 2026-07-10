@@ -86,11 +86,75 @@ SECTORS = {
 }
 COIN_SECTOR = {coin: s for s, coins in SECTORS.items() for coin in coins}
 
-WATCH_COINS = [
+# القائمة الاحتياطية — تُستخدم إذا فشل جلب القائمة الديناميكية
+WATCH_COINS_FALLBACK = [
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT",
     "LINK", "UNI", "ATOM", "NEAR", "APT", "SUI", "ARB", "OP", "PEPE",
     "FIL", "LTC", "TRX", "ICP", "AAVE", "HBAR", "TON", "WIF", "INJ",
 ]
+
+# ── قائمة المستثنيات (مستقرات + ذهب + wrapped) ────────────────────────────
+_BREAKOUT_EXCLUDE = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","USDD","GUSD",
+    "USDG","PYUSD","FDUSD","USDE","SUSD","CRVUSD","GHO","USDX","USDS",
+    "RLUSD","EURC","EUROC","EURS","EURT","EURA","EUROE",
+    "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD",
+    "WBTC","WETH","STETH","RETH","CBETH","WSTETH","WEETH","RSETH","EZETH","WBETH",
+}
+
+def get_dynamic_coins(top_n: int = 75, min_vol_usdt: float = 1_000_000) -> list:
+    """
+    جلب أعلى top_n عملة من OKX Spot مرتبة بحجم التداول 24h
+    مع استثناء المستقرات والذهب والرموز المغلفة
+    """
+    try:
+        r = requests.get(
+            "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+            timeout=15
+        )
+        data = r.json()
+        if data.get("code") != "0":
+            logger.warning("⚠️ get_dynamic_coins: OKX API error — using fallback")
+            return WATCH_COINS_FALLBACK
+
+        coins = []
+        for t in data["data"]:
+            inst = t.get("instId", "")
+            if not inst.endswith("-USDT"):
+                continue
+            base = inst.replace("-USDT", "").upper()
+
+            # استثناء المستقرات والذهب
+            if base in _BREAKOUT_EXCLUDE:
+                continue
+            if base.startswith("USD") or base.endswith("USD"):
+                continue
+            if base.startswith("EUR"):
+                continue
+            if any(x in base for x in ["XAU","XAG","GOLD","SILVER"]):
+                continue
+
+            try:
+                vol_usdt = float(t.get("volCcy24h", 0)) * float(t.get("last", 0))
+                if vol_usdt < min_vol_usdt:
+                    continue
+            except Exception:
+                continue
+
+            coins.append((base, vol_usdt))
+
+        # ترتيب تنازلي بالحجم وأخذ أعلى top_n
+        coins.sort(key=lambda x: x[1], reverse=True)
+        result = [c[0] for c in coins[:top_n]]
+        logger.info(f"📊 القائمة الديناميكية: {len(result)} عملة (أعلى {top_n} بحجم > ${min_vol_usdt/1e6:.0f}M)")
+        return result if result else WATCH_COINS_FALLBACK
+
+    except Exception as e:
+        logger.warning(f"⚠️ get_dynamic_coins error: {e} — using fallback")
+        return WATCH_COINS_FALLBACK
+
+# القائمة الأولية — ستُحدَّث ديناميكياً في كل دورة مسح
+WATCH_COINS = get_dynamic_coins()
 
 
 # ─── أدوات مساعدة ─────────────────────────────────────────────────────────────
@@ -830,7 +894,10 @@ class BreakoutSignalSystem:
         # ثانياً: فحص الاختراقات المعلقة (انتظار Retest)
         self._monitor_pending_breakouts()
 
-        # ثالثاً: البحث عن اختراقات جديدة
+        # ثالثاً: تحديث القائمة الديناميكية في كل دورة مسح
+        global WATCH_COINS
+        WATCH_COINS = get_dynamic_coins(top_n=75, min_vol_usdt=1_000_000)
+        # رابعاً: البحث عن اختراقات جديدة
         logger.info(f"🔍 Scanning {len(WATCH_COINS)} coins for new breakouts...")
         breakouts_found = 0
 
@@ -883,7 +950,7 @@ def main():
     SCAN_INTERVAL = 5 * 60
 
     logger.info("🚀 Breakout Signal System v4 started")
-    logger.info(f"📡 {len(WATCH_COINS)} coins | scan every {SCAN_INTERVAL//60}min")
+    logger.info(f"📡 {len(WATCH_COINS)} coins (ديناميكي) | scan every {SCAN_INTERVAL//60}min")
     logger.info("📢 Trade Lak Signal channel:")
     logger.info("  📡 Entry signals (after Breakout + Retest + Technical confirmation)")
     logger.info("  ⚠️ Liquidity warnings | ✅❌ Close results")

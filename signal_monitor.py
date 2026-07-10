@@ -15,6 +15,16 @@ from datetime import datetime
 # ── المسارات ──────────────────────────────────────────────
 BASE_DIR      = "/root/trade_lak_bot"
 SIGNALS_FILE  = os.path.join(BASE_DIR, "data", "signal_channel_active.json")
+
+# ── قائمة العملات المستثناة (مستقرات + ذهب + wrapped) ─────────────────────
+_SIGNAL_MONITOR_EXCLUDE = {
+    "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","USDD","GUSD",
+    "USDG","PYUSD","FDUSD","USDE","SUSD","CRVUSD","GHO","USDX","USDS",
+    "RLUSD","RESOLV","EURC","EUROC","EURS","EURT","EURA","EUROE",
+    "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD",
+    "WBTC","WETH","STETH","RETH","CBETH","WSTETH","WEETH","RSETH","EZETH","WBETH",
+}
+
 STATE_FILE    = os.path.join(BASE_DIR, "data", "signal_monitor_state.json")
 LOG_FILE      = os.path.join(BASE_DIR, "signal_monitor.log")
 
@@ -110,11 +120,34 @@ def get_current_price(symbol: str) -> float:
     return 0.0
 
 def load_signals() -> dict:
-    """تحميل الإشارات النشطة من الملف"""
+    """تحميل الإشارات النشطة من الملف — مع استثناء المستقرات والذهب"""
     try:
         if os.path.exists(SIGNALS_FILE):
             with open(SIGNALS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+            # تصفية المستقرات والعملات المستثناة
+            filtered = {}
+            for sym, data in raw.items():
+                base = sym.replace("/USDT","").replace("-USDT","").upper()
+                if base in _SIGNAL_MONITOR_EXCLUDE:
+                    log.warning(f"⚠️ [{sym}] مُستثنى من المراقبة (مستقر/ذهب)")
+                    # حذفه من الملف نهائياً
+                    try:
+                        with open(SIGNALS_FILE, "r", encoding="utf-8") as f2:
+                            all_data = json.load(f2)
+                        if sym in all_data:
+                            del all_data[sym]
+                            with open(SIGNALS_FILE, "w", encoding="utf-8") as f2:
+                                json.dump(all_data, f2, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                    continue
+                # فحص إضافي: أي عملة تبدأ بـ USD أو تنتهي بـ USD
+                if base.startswith("USD") or base.endswith("USD") or base.startswith("EUR"):
+                    log.warning(f"⚠️ [{sym}] مُستثنى (بادئة/لاحقة مستقر)")
+                    continue
+                filtered[sym] = data
+            return filtered
     except Exception as e:
         log.error(f"خطأ في تحميل الإشارات: {e}")
     return {}
@@ -360,6 +393,13 @@ def check_signals():
                 state[symbol] = {"tp_hit": [], "sl_hit": False}
 
             sym_state = state[symbol]
+            # ── إذا كانت الإشارة أحدث من آخر SL → إشارة جديدة، إعادة تعيين state ──
+            sl_hit_time_old = sym_state.get("sl_hit_time", 0)
+            if sym_state.get("sl_hit") and sent_at > sl_hit_time_old:
+                log.info(f"[{symbol}] إشارة جديدة (sent_at={sent_at:.0f} > sl_hit_time={sl_hit_time_old:.0f}) — إعادة تعيين state")
+                state[symbol] = {"tp_hit": [], "sl_hit": False}
+                sym_state = state[symbol]
+                state_changed = True
 
             # ── فحص وقف الخسارة (مع هامش مقاومة الـ wicks) ──
             # SL الفعلي = SL المحدد - 0.5% هامش إضافي لتجنب Stop Hunt

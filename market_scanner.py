@@ -46,20 +46,42 @@ VOL_SPIKE_RATIO   = 3.0      # 300% من المتوسط = حجم استثنائ�
 VOL_SPIKE_COOLDOWN = 7200   # 2 ساعة بين تنبيهي حجم لنفس العملة
 VOL_SPIKE_STATE_FILE = os.path.join(BASE_DIR, "data", "vol_spike_state.json")
 
-# عملات مستثناة (stablecoins + wrapped + meme منخفض السيولة)
+# عملات مستثناة (stablecoins + wrapped + مشتقات) — قائمة مركزية نهائية
 EXCLUDED = {
-    # USD stablecoins
+    # ── USD Stablecoins ──────────────────────────────────────────────────────
     "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","USDD","GUSD",
     "USDG","PYUSD","FDUSD","USDE","SUSD","CRVUSD","GHO","USDX","USDS",
     "CUSD","MUSD","HUSD","OUSD","DOLA","RLUSD","RESOLV","USDN","USDY",
-    # EUR stablecoins
-    "EURC","EUROC","EURS","EURT","EURA","EUROE",
-    # Gold-backed / commodity stablecoins
-    "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD",
-    # Wrapped tokens
+    "USDZ","USDB","USDK","USDL","USDM","USDQ","USDR","USDW","USDF",
+    "ALUSD","BBUSD","CBUSD","DBUSD","EBUSD","FBUSD","GBUSD","HBUSD",
+    "ZUSD","NUSD","XUSD","YUSD","ZUSD","LISUSD","MKUSD","RAI","BEAN",
+    "USDV","USDJ","USDI","USDH","USDG","USDC.E","USDT.E",
+    # ── EUR / GBP / Other Fiat Stablecoins ───────────────────────────────────
+    "EURC","EUROC","EURS","EURT","EURA","EUROE","EURM","EURL","EURX",
+    "GBPT","GBPC","GYEN","CADC","NZDS","BRLA","MXNT","IDRT","BIDR",
+    # ── Gold / Commodity Stablecoins ─────────────────────────────────────────
+    "PAXG","XAUT","PMGT","DGLD","CACHE","TGOLD","AGLD","XGOLD","GOLD",
+    "SLVT","SILVER","PTGC","MCAU","LBMA",
+    # ── Wrapped / LST Tokens ─────────────────────────────────────────────────
     "WBTC","WETH","STETH","RETH","CBETH","WSTETH","WEETH","RSETH","EZETH","WBETH",
-    "BTC","ETH",  # كبيرة جداً — سيولة مختلفة
+    "SFRXETH","ANKRETH","SWETH","OETH","FRXETH","METH","PETH","SETH2",
+    "WBNB","WMATIC","WAVAX","WSOL","WFTM","WONE","WCELO",
+    # ── كبيرة جداً / سيولة مختلفة ────────────────────────────────────────────
+    "BTC","ETH",
 }
+
+def is_excluded(coin: str) -> bool:
+    """يتحقق إذا كانت العملة مستثناة — يفحص الاسم الكامل وأي بادئة/لاحقة شائعة"""
+    c = coin.upper().strip()
+    if c in EXCLUDED:
+        return True
+    # فحص إضافي: أي عملة تبدأ بـ USD أو تنتهي بـ USD أو USDT
+    if c.startswith("USD") or c.endswith("USD") or c.endswith("USDT"):
+        return True
+    # فحص: عملات الذهب والفضة
+    if any(x in c for x in ["GOLD","SILVER","XAU","XAG"]):
+        return True
+    return False
 
 # ── دوال مساعدة ───────────────────────────────────────────
 def send_telegram(msg: str, chat_id: str = None) -> bool:
@@ -100,6 +122,10 @@ def save_sl_memory(memory: dict):
 def send_signal_entry(op: dict):
     """إرسال توصية دخول على قناة Trade Lak Signal"""
     base    = op["base"]
+    # ── خط دفاع أخير: لا إشارات للعملات المستقرة أبداً ──────────────────────
+    if is_excluded(base):
+        log.warning(f"[{base}] مستثناة — لن تُرسل إشارة دخول")
+        return False
     price   = op["price"]
     entry   = price
     atr_4h  = op.get("atr_4h", entry * 0.02)
@@ -385,6 +411,9 @@ def calc_macd_hist(closes, fast=12, slow=26, signal=9) -> float:
     return (macd_line - signal_line)[-1]
 
 def score_coin(sym_info: dict) -> dict | None:
+    base = sym_info.get("instId","").replace("-USDT","")
+    if is_excluded(base):
+        return None
     """تحليل عملة وإرجاع النتيجة"""
     inst_id = sym_info["instId"]
     price   = sym_info["price"]
@@ -644,7 +673,9 @@ def send_volume_spike_alert(spike: dict) -> bool:
 
 
 def _add_to_watchlist_auto(coin: str, price: float, reason: str = ""):
-    """يُضيف عملة تلقائياً لـ dynamic_watchlist عند فشل بصمة الحركة"""
+    """يُضيف عملة تلقائياً لـ dynamic_watchlist — مع فحص is_excluded"""
+    if is_excluded(coin):
+        return  # لا تُضف العملات المستثناة
     wl = load_dynamic_watchlist()
     if coin not in wl:
         wl[coin] = {
