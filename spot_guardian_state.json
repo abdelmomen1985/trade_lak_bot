@@ -1,13 +1,13 @@
 {
   "BTC": {
     "avg_buy": 59511.0,
-    "peak_price": 63416.2,
+    "peak_price": 64660.4,
     "phase": "trailing",
     "warned": false
   },
   "AVAX": {
     "avg_buy": 6.1431,
-    "peak_price": 6.807,
+    "peak_price": 6.825,
     "phase": "trailing",
     "warned": false
   }
